@@ -3202,24 +3202,41 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
     const _origSendMessage = sock.sendMessage.bind(sock);
     sock.sendMessage = async (jid, content, options) => {
         // Fork compat: xzcbailz's sendMessage has no `react` shorthand (that
-        // is an official-baileys 7.x feature). Deliver emoji reactions as a
-        // raw protocol-level reactionMessage relay instead — supported by
-        // every baileys — so command reacts keep working on the fork build.
+        // is an official-baileys 7.x feature). Translate it to the fork's
+        // NATIVE reaction content ({ reactionMessage }) so it rides the fork's
+        // own 'reaction' pipeline and renders properly; a raw protocol relay
+        // is the fallback. Every step is logged (WA-REACT) so failures are
+        // visible in the logs without enabling VERBOSE_LOGS.
         if (content && typeof content === 'object' && content.react?.key) {
             const rk = content.react.key;
+            const rText = String(content.react.text || '');
             const rJid = typeof jid === 'string' ? jid : (rk.remoteJid || '');
+            log('WA-REACT', `${phoneNumber}: reacting ${rText || '(empty)'} → ${rJid} (on msg ${rk.id})`);
+            try {
+                const rRes = await _origSendMessage(rJid, {
+                    reactionMessage: {
+                        key: rk,
+                        text: rText,
+                        senderTimestampMs: Date.now()
+                    }
+                });
+                log('WA-REACT', `${phoneNumber}: native reaction ok (id=${rRes?.key?.id || '?'})`);
+                return rRes;
+            } catch (err) {
+                logError('WA-REACT', `${phoneNumber}: native reaction failed (${err?.message || err}) — trying raw relay`);
+            }
             try {
                 await sock.relayMessage(rJid, {
                     reactionMessage: {
                         key: rk,
-                        text: String(content.react.text || ''),
+                        text: rText,
                         senderTimestampMs: Date.now()
                     }
                 }, {});
-                if (VERBOSE_LOGS) log('WA-SEND', `${phoneNumber}: sent react ${String(content.react.text || '')} | jid=${rJid}`);
+                log('WA-REACT', `${phoneNumber}: raw relay reaction sent`);
                 return;
             } catch (err) {
-                log('WA-SEND', `${phoneNumber}: react relay failed (${err?.message || err}) — trying native send`);
+                logError('WA-REACT', `${phoneNumber}: raw relay reaction also failed (${err?.message || err}) — giving up`);
             }
         }
         const res = await _origSendMessage(jid, content, options);
