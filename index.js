@@ -3239,19 +3239,12 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
                 throw err;
             }
         }
-        // Fork compat: the fork only attaches the required `polltype: creation`
-        // meta node when its aiLabel config is enabled — without it the server
-        // silently drops polls (persona/menu polls never arrive even though
-        // the send appears to succeed). Pass the node explicitly per poll.
-        if (content && typeof content === 'object' && content.poll) {
-            options = {
-                ...(options || {}),
-                additionalNodes: [
-                    ...(((options && options.additionalNodes) || [])),
-                    { tag: 'meta', attrs: { polltype: 'creation' } }
-                ]
-            };
-        }
+        // Do not inject poll metadata here. xzcbailz 1.0.6's relayMessage()
+        // already detects pollCreationMessage/V2/V3 and appends exactly one
+        // `<meta polltype="creation">` node. The old compatibility shim added
+        // a second identical node through options.additionalNodes; WhatsApp
+        // silently discarded those malformed poll stanzas even though the
+        // local send promise resolved.
         const res = await _origSendMessage(jid, content, options);
         const toJid = typeof jid === 'string' ? jid : (jid?.remoteJid || '?');
         if (VERBOSE_LOGS) log('WA-SEND', `${phoneNumber}: sent msg | id=${res?.key?.id || '?'} jid=${toJid}`);
@@ -3857,18 +3850,47 @@ function handlePollUpdateMessage(sock, phoneNumber, msg) {
 // Used for the main .menu poll and the "Choose Your Domain" sub-poll.
 async function sendMenuPoll(sock, remoteJid, phoneNumber, question, options, ids) {
     if (sock?._eventidePhone) flashPresenceOnline(sock, sock._eventidePhone);
+
+    const pollOptions = Array.isArray(options) ? options.map(v => String(v || '').trim()).filter(Boolean) : [];
+    const pollIds = Array.isArray(ids) ? ids : [];
+    if (!remoteJid || remoteJid === 'unknown') throw new Error('Poll destination is missing.');
+    if (!String(question || '').trim()) throw new Error('Poll question is empty.');
+    if (pollOptions.length < 2 || pollOptions.length > 12) {
+        throw new Error(`A WhatsApp poll needs 2–12 options; received ${pollOptions.length}.`);
+    }
+    if (pollIds.length !== pollOptions.length) {
+        throw new Error(`Poll option/id mismatch (${pollOptions.length} options, ${pollIds.length} ids).`);
+    }
+
     const secret = crypto.randomBytes(32);
+    log('POLL-SEND', `${phoneNumber}: sending poll to ${remoteJid} | options=${pollOptions.length} | question=${JSON.stringify(trimForLog(question, 80))}`);
+
+    // Use the fork's native poll input without additionalNodes. Its content
+    // generator creates pollCreationMessageV3 for selectableCount=1, and its
+    // relay layer adds the one required polltype=creation metadata node.
     const pollMsg = await sock.sendMessage(remoteJid, {
         poll: {
-            name: question,
-            values: options,
+            name: String(question),
+            values: pollOptions,
             selectableCount: 1,
             messageSecret: secret
         }
     });
     if (!pollMsg?.key?.id) {
-        throw new Error('WhatsApp rejected the poll. Try the command again.');
+        throw new Error('The poll send returned no message ID.');
     }
+
+    const wireType = pollMsg?.message?.pollCreationMessageV3
+        ? 'pollCreationMessageV3'
+        : pollMsg?.message?.pollCreationMessageV2
+            ? 'pollCreationMessageV2'
+            : pollMsg?.message?.pollCreationMessage
+                ? 'pollCreationMessage'
+                : 'MISSING_POLL_PAYLOAD';
+    if (wireType === 'MISSING_POLL_PAYLOAD') {
+        throw new Error(`Poll ${pollMsg.key.id} was generated without a poll payload.`);
+    }
+    log('POLL-SEND', `${phoneNumber}: poll dispatched | id=${pollMsg.key.id} | type=${wireType} | jid=${remoteJid}`);
 
     const actualSecret =
         pollMsg?.message?.messageContextInfo?.messageSecret ||
@@ -3878,8 +3900,8 @@ async function sendMenuPoll(sock, remoteJid, phoneNumber, question, options, ids
     const cache = loadPollCache(phoneNumber);
     cache.set(pollMsg.key.id, {
         secretHex: actualSecret.toString('hex'),
-        options,
-        ids,
+        options: pollOptions,
+        ids: pollIds,
         fullMessage: pollMsg.message || null
     });
     savePollCache(phoneNumber, cache);
