@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Sessions (user auth data)
+sessions/
+web_users.json
+web_id_sessions.json
+backups/
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# Runtime stamp (written by boot.js / auto-deploy)
+CURRENT_COMMIT.txt
+BOOT_STATUS.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

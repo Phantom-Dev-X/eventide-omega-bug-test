@@ -1,0 +1,13 @@
+# Eventide Omega — Netlify = website only.
+# /api is proxied to the Pterodactyl panel (persistent disk).
+# Render does not use this file.
+
+[build]
+  publish = "public"
+  command = "echo static-public"
+
+[[redirects]]
+  from = "/api/*"
+  to = "http://95.111.228.231:20006/api/:splat"
+  status = 200
+  force = true

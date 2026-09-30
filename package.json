@@ -1,0 +1,24 @@
+{
+  "name": "whatsapp-multi-bot",
+  "version": "1.0.0",
+  "description": "Multi-user WhatsApp bot with Telegram pairing and database persistence",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node boot.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "baileys": "^7.0.0-rc13",
+    "express": "^4.21.0",
+    "link-preview-js": "^3.2.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.35.3",
+    "ws": "^8.21.2"
+  }
+}
