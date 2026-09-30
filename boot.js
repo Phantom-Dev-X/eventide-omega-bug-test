@@ -57,7 +57,7 @@ const panelMode = isOff(flag('USE_SUPABASE'));
 const auto = flag('AUTO_UPDATE');
 const shouldSyncOnBoot = isOn(auto) || (!isOff(auto) && panelMode);
 
-const REMOTE_URL = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-original.git').trim();
+const REMOTE_URL = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-omega-bug-test.git').trim();
 
 function hasCmd(cmd) {
     try {

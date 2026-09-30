@@ -8758,7 +8758,7 @@ function gitEnsureRepo() {
         gitShQ('git init');
     }
     try { gitShQ('git config --global --add safe.directory ' + JSON.stringify(__dirname)); } catch (_) {}
-    const remoteUrl = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-original.git').trim();
+    const remoteUrl = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-omega-bug-test.git').trim();
     try {
         gitShQ(`git remote add origin ${remoteUrl}`);
     } catch (_) {
