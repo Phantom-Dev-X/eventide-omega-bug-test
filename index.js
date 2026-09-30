@@ -5383,13 +5383,23 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     log('REACT', `${phoneNumber}: stale cmd '${reactMatch[0]}' skipped (age>5min)`);
                 } else {
                     const reactSender = msg.key.participant || msg.key.remoteJid;
-                    const reactOwner = jidNormalizedUser(reactSender) === jidNormalizedUser(sock.user?.id || '') || isDevNumber(reactSender);
+                    // `fromMe` is the reliable owner signal. In LID-addressed
+                    // groups, participant can be `<lid>@lid` while sock.user.id
+                    // is `<phone>:<device>@s.whatsapp.net`; comparing those JIDs
+                    // alone incorrectly classifies the owner's own command as a
+                    // non-owner. The command flow uses fromMe too, which is why
+                    // it could reply to .ping while silently skipping ⚡.
+                    const reactOwner = fromMe
+                        || jidNormalizedUser(reactSender) === jidNormalizedUser(sock.user?.id || '')
+                        || isDevNumber(reactSender);
                     if (loadBotMode(phoneNumber) !== 'owner' || reactOwner || isSudo(phoneNumber, reactSender)) {
-                        log('REACT', `${phoneNumber}: cmd '${reactMatch[0]}' on ${msgId} (type=${eventType}) — sending ⚡ now...`);
+                        log('REACT', `${phoneNumber}: cmd '${reactMatch[0]}' on ${msgId} (type=${eventType}, fromMe=${fromMe}) — sending ⚡ now...`);
                         await sock.sendMessage(remoteJid, { react: { text: '⚡', key: msg.key } }, {});
                         log('REACT', `${phoneNumber}: ⚡ reaction SENT for ${msgId}`);
-                    } else if (VERBOSE_LOGS) {
-                        log('REACT', `${phoneNumber}: owner-only mode — no reaction for ${msgId}`);
+                    } else {
+                        // Always log the gate decision; this must never be
+                        // hidden behind VERBOSE_LOGS during reaction debugging.
+                        log('REACT', `${phoneNumber}: owner-only mode blocked reaction for ${msgId} (sender=${reactSender}, fromMe=${fromMe})`);
                     }
                 }
             } else if (VERBOSE_LOGS) {
