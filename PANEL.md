@@ -13,7 +13,24 @@ staged progress messages and the commit name.
 commit and the bot DMs the result to your WhatsApp (NEW COMMIT DEPLOYED /
 ALREADY LATEST). Details: **[AUTO_DEPLOY.md](./AUTO_DEPLOY.md)**.
 
-## Startup command
+## One-file installer (recommended)
+
+Upload `panel-install.sh` to the panel's home folder and set the startup command to:
+
+```bash
+bash panel-install.sh
+```
+
+On its first run it clones this repository, creates a safe local-disk `.env`,
+installs production dependencies, and starts `boot.js`. On later starts it
+fetches the latest `main` commit while preserving `.env`, sessions, and backups.
+Fill the blank values in `eventide-omega-bug-test/.env` through File Manager.
+The panel image must provide Git and Node.js 20 or newer.
+
+If you need a different location, repository, or branch, set `APP_DIR`,
+`REPO_URL`, or `REPO_BRANCH` in the panel's startup variables.
+
+## Manual startup command
 
 ```bash
 npm install --omit=dev
