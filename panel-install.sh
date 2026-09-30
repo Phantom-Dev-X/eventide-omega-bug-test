@@ -122,7 +122,7 @@ PACKAGE_HASH="$(node -e "const fs=require('fs'),c=require('crypto');process.stdo
 OLD_HASH="$(cat .panel-package.sha256 2>/dev/null || true)"
 if [[ ! -d node_modules || ! -f node_modules/xzcbailz/package.json || "$PACKAGE_HASH" != "$OLD_HASH" ]]; then
     say "Installing production dependencies..."
-    npm install --omit=dev --no-audit --no-fund
+    npm install --omit=dev --no-audit --no-fund --allow-git=all
     printf '%s' "$PACKAGE_HASH" > .panel-package.sha256
 else
     say "Dependencies are already current."

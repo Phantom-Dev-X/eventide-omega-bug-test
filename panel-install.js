@@ -160,7 +160,7 @@ const dependenciesMissing = !fs.existsSync(path.join(APP_DIR, 'node_modules', 'x
 if (dependenciesMissing || oldHash !== packageHash) {
     say('Installing production dependencies...');
     try {
-        run('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], { cwd: APP_DIR });
+        run('npm', ['install', '--omit=dev', '--no-audit', '--no-fund', '--allow-git=all'], { cwd: APP_DIR });
         fs.writeFileSync(hashFile, packageHash, 'utf8');
     } catch (error) {
         die('Dependency installation failed.', error);

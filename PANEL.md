@@ -36,7 +36,7 @@ If you need a different location, repository, or branch, set `APP_DIR`,
 ## Manual startup command
 
 ```bash
-npm install --omit=dev
+npm install --omit=dev --allow-git=all
 node boot.js
 ```
 
