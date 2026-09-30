@@ -83,6 +83,21 @@ try {
         run('git', ['remote', 'set-url', 'origin', REPO_URL], { cwd: APP_DIR });
         run('git', ['fetch', '--depth', '1', 'origin', REPO_BRANCH], { cwd: APP_DIR });
         run('git', ['checkout', '-f', '-B', REPO_BRANCH, `origin/${REPO_BRANCH}`], { cwd: APP_DIR });
+    } else if (scriptIsInsideRepo && APP_DIR === scriptDir) {
+        // Recovery path for panel users who moved the cloned app's visible
+        // files into /home/container but did not move its hidden .git folder.
+        // Adopt those loose files in place without deleting .env, sessions,
+        // backups, or panel-managed files.
+        say('Loose Eventide files detected without .git; adopting this folder as the Git checkout...');
+        run('git', ['init'], { cwd: APP_DIR });
+        try {
+            run('git', ['remote', 'add', 'origin', REPO_URL], { cwd: APP_DIR });
+        } catch {
+            run('git', ['remote', 'set-url', 'origin', REPO_URL], { cwd: APP_DIR });
+        }
+        run('git', ['fetch', '--depth', '1', 'origin', REPO_BRANCH], { cwd: APP_DIR });
+        run('git', ['checkout', '-f', '-B', REPO_BRANCH, `origin/${REPO_BRANCH}`], { cwd: APP_DIR });
+        try { run('git', ['config', '--global', '--add', 'safe.directory', APP_DIR]); } catch {}
     } else if (directoryHasFiles(APP_DIR)) {
         die(`${APP_DIR} exists and is not an empty Git checkout. Set APP_DIR to an empty folder.`);
     } else {
