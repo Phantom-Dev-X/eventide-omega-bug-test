@@ -7103,7 +7103,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             }
         }
 
-        // Bare .Cia/.FIA (no target) → usage help only. These commands never
+        // Bare .crash-invis/.frz-oom (no target) → usage help only. Never fire bare.
         // fire at the current chat by accident.
         if (!targetInput) {
             await safeWaReply(sock, remoteJid,
