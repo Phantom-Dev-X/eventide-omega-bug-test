@@ -3201,12 +3201,12 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
     // bot's own sends back into messages.upsert with type='append'.
     const _origSendMessage = sock.sendMessage.bind(sock);
     sock.sendMessage = async (jid, content, options) => {
-        // Fork compat: xzcbailz's sendMessage has no `react` shorthand (that
-        // is an official-baileys 7.x feature). Translate it to the fork's
-        // NATIVE reaction content ({ reactionMessage }) so it rides the fork's
-        // own 'reaction' pipeline and renders properly; a raw protocol relay
-        // is the fallback. Every step is logged (WA-REACT) so failures are
-        // visible in the logs without enabling VERBOSE_LOGS.
+        // xzcbailz 1.0.6 supports the same `{ react: { text, key } }` input as
+        // Baileys. Keep that shape intact: its generateWAMessageContent()
+        // converts `react` into the protocol-level `reactionMessage` and its
+        // relay path marks the stanza as type="reaction". Passing
+        // `{ reactionMessage }` directly to sendMessage() skips that converter
+        // and can produce an empty/non-rendering message while still resolving.
         if (content && typeof content === 'object' && content.react?.key) {
             const rk = content.react.key;
             const rText = String(content.react.text || '');
@@ -3214,29 +3214,18 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
             log('WA-REACT', `${phoneNumber}: reacting ${rText || '(empty)'} → ${rJid} (on msg ${rk.id})`);
             try {
                 const rRes = await _origSendMessage(rJid, {
-                    reactionMessage: {
+                    react: {
+                        ...content.react,
                         key: rk,
                         text: rText,
-                        senderTimestampMs: Date.now()
+                        senderTimestampMs: content.react.senderTimestampMs || Date.now()
                     }
-                });
-                log('WA-REACT', `${phoneNumber}: native reaction ok (id=${rRes?.key?.id || '?'})`);
+                }, options || {});
+                log('WA-REACT', `${phoneNumber}: reaction sent (id=${rRes?.key?.id || '?'})`);
                 return rRes;
             } catch (err) {
-                logError('WA-REACT', `${phoneNumber}: native reaction failed (${err?.message || err}) — trying raw relay`);
-            }
-            try {
-                await sock.relayMessage(rJid, {
-                    reactionMessage: {
-                        key: rk,
-                        text: rText,
-                        senderTimestampMs: Date.now()
-                    }
-                }, {});
-                log('WA-REACT', `${phoneNumber}: raw relay reaction sent`);
-                return;
-            } catch (err) {
-                logError('WA-REACT', `${phoneNumber}: raw relay reaction also failed (${err?.message || err}) — giving up`);
+                logError('WA-REACT', `${phoneNumber}: reaction failed`, err);
+                throw err;
             }
         }
         const res = await _origSendMessage(jid, content, options);
