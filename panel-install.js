@@ -11,13 +11,12 @@
  *   REPO_BRANCH=main
  */
 
-// Dynamic built-in imports keep this file runnable both as standalone CommonJS
-// (`node panel-install.js` outside the repo) and inside this ESM repository.
-(async () => {
-const fs = (await import('node:fs')).default;
-const path = (await import('node:path')).default;
-const crypto = (await import('node:crypto')).default;
-const { spawn, spawnSync } = await import('node:child_process');
+// This installer is intentionally CommonJS so a panel can run the standalone
+// uploaded file directly, without package.json or Bash.
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { spawn, spawnSync } = require('node:child_process');
 
 const REPO_URL = process.env.REPO_URL || 'https://github.com/Phantom-Dev-X/eventide-omega-bug-test.git';
 const REPO_BRANCH = process.env.REPO_BRANCH || 'main';
@@ -203,8 +202,4 @@ child.on('exit', (code, signal) => {
         process.exit(0);
     }
     process.exit(Number.isInteger(code) ? code : 1);
-});
-})().catch(error => {
-    console.error(`\n[PANEL-INSTALL] FATAL: ${error?.stack || error}`);
-    process.exit(1);
 });
