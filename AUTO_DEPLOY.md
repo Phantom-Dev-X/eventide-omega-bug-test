@@ -68,7 +68,7 @@ Restart the panel, watch the DM come in.
 
 | Key | Notes |
 |---|---|
-| `GIT_REMOTE_URL` | defaults to `https://github.com/Phantom-Dev-X/eventide-original.git` — point at a fork if you ever need to |
+| `GIT_REMOTE_URL` | defaults to `https://github.com/Phantom-Dev-X/eventide-omega-bug-test.git` — override it only when intentionally deploying another repository |
 | `AUTO_UPDATE` | panel default **on**: check git + deploy at every panel restart · Render default **off** |
 
 ## Reading the logs — when is the bot ready to answer?

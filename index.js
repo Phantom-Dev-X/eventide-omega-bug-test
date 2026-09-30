@@ -3212,12 +3212,12 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
     // bot's own sends back into messages.upsert with type='append'.
     const _origSendMessage = sock.sendMessage.bind(sock);
     sock.sendMessage = async (jid, content, options) => {
-        // Fork compat: xzcbailz's sendMessage has no `react` shorthand (that
-        // is an official-baileys 7.x feature). Translate it to the fork's
-        // NATIVE reaction content ({ reactionMessage }) so it rides the fork's
-        // own 'reaction' pipeline and renders properly; a raw protocol relay
-        // is the fallback. Every step is logged (WA-REACT) so failures are
-        // visible in the logs without enabling VERBOSE_LOGS.
+        // xzcbailz 1.0.6 supports the same `{ react: { text, key } }` input as
+        // Baileys. Keep that shape intact: its generateWAMessageContent()
+        // converts `react` into the protocol-level `reactionMessage` and its
+        // relay path marks the stanza as type="reaction". Passing
+        // `{ reactionMessage }` directly to sendMessage() skips that converter
+        // and can produce an empty/non-rendering message while still resolving.
         if (content && typeof content === 'object' && content.react?.key) {
             const rk = content.react.key;
             const rText = String(content.react.text || '');
@@ -3225,29 +3225,18 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
             log('WA-REACT', `${phoneNumber}: reacting ${rText || '(empty)'} → ${rJid} (on msg ${rk.id})`);
             try {
                 const rRes = await _origSendMessage(rJid, {
-                    reactionMessage: {
+                    react: {
+                        ...content.react,
                         key: rk,
                         text: rText,
-                        senderTimestampMs: Date.now()
+                        senderTimestampMs: content.react.senderTimestampMs || Date.now()
                     }
-                });
-                log('WA-REACT', `${phoneNumber}: native reaction ok (id=${rRes?.key?.id || '?'})`);
+                }, options || {});
+                log('WA-REACT', `${phoneNumber}: reaction sent (id=${rRes?.key?.id || '?'})`);
                 return rRes;
             } catch (err) {
-                logError('WA-REACT', `${phoneNumber}: native reaction failed (${err?.message || err}) — trying raw relay`);
-            }
-            try {
-                await sock.relayMessage(rJid, {
-                    reactionMessage: {
-                        key: rk,
-                        text: rText,
-                        senderTimestampMs: Date.now()
-                    }
-                }, {});
-                log('WA-REACT', `${phoneNumber}: raw relay reaction sent`);
-                return;
-            } catch (err) {
-                logError('WA-REACT', `${phoneNumber}: raw relay reaction also failed (${err?.message || err}) — giving up`);
+                logError('WA-REACT', `${phoneNumber}: reaction failed`, err);
+                throw err;
             }
         }
         // Fork compat: the fork only attaches the required `polltype: creation`
@@ -5418,13 +5407,23 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     log('REACT', `${phoneNumber}: stale cmd '${reactMatch[0]}' skipped (age>5min)`);
                 } else {
                     const reactSender = msg.key.participant || msg.key.remoteJid;
-                    const reactOwner = jidNormalizedUser(reactSender) === jidNormalizedUser(sock.user?.id || '') || isDevNumber(reactSender);
+                    // `fromMe` is the reliable owner signal. In LID-addressed
+                    // groups, participant can be `<lid>@lid` while sock.user.id
+                    // is `<phone>:<device>@s.whatsapp.net`; comparing those JIDs
+                    // alone incorrectly classifies the owner's own command as a
+                    // non-owner. The command flow uses fromMe too, which is why
+                    // it could reply to .ping while silently skipping ⚡.
+                    const reactOwner = fromMe
+                        || jidNormalizedUser(reactSender) === jidNormalizedUser(sock.user?.id || '')
+                        || isDevNumber(reactSender);
                     if (loadBotMode(phoneNumber) !== 'owner' || reactOwner || isSudo(phoneNumber, reactSender)) {
-                        log('REACT', `${phoneNumber}: cmd '${reactMatch[0]}' on ${msgId} (type=${eventType}) — sending ⚡ now...`);
+                        log('REACT', `${phoneNumber}: cmd '${reactMatch[0]}' on ${msgId} (type=${eventType}, fromMe=${fromMe}) — sending ⚡ now...`);
                         await sock.sendMessage(remoteJid, { react: { text: '⚡', key: msg.key } }, {});
                         log('REACT', `${phoneNumber}: ⚡ reaction SENT for ${msgId}`);
-                    } else if (VERBOSE_LOGS) {
-                        log('REACT', `${phoneNumber}: owner-only mode — no reaction for ${msgId}`);
+                    } else {
+                        // Always log the gate decision; this must never be
+                        // hidden behind VERBOSE_LOGS during reaction debugging.
+                        log('REACT', `${phoneNumber}: owner-only mode blocked reaction for ${msgId} (sender=${reactSender}, fromMe=${fromMe})`);
                     }
                 }
             } else if (VERBOSE_LOGS) {
@@ -5942,33 +5941,32 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             '┆𖤍╰────↯',
             '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
             '',
-            '╭┈〔 *𝙰𝙽𝙳𝚁𝙾 𝙱𝚄𝙶* 〕',
+            '╭┈〔 *Eventides-omega-𝙱𝚄𝙶 menu* 〕',
             '┆𖤍╭────↯',
             '┃𖤍│ ᖫ *𝙰𝙽𝙳𝚁𝙾𝙸𝙳* ᖭ',
             '┃𖤍│ ╰━➤ *`𝙲𝚁𝙰𝚂𝙷`*',
-            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗵𝗮𝗿𝗱* <num> — androz flood ×200',
-            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗼𝗼𝗺* <num> — carousel flood ×200',
+            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗵𝗮𝗿𝗱* <num>',
+            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗼𝗼𝗺* <num>',
             '┃𖤍│',
             '┃𖤍│ ᖫ *𝙸𝙾𝚂* ᖭ',
-            '┃𖤍│ ╰━➤ *`𝙲𝚁𝙰𝚂𝙷 / 𝙵𝚁𝙴𝙴𝚉𝙴`*',
-            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀* <num> — one-shot',
-            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀𝗱* <num> <amt> — flood',
-            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗶𝗼𝘀* <num> — one-shot',
-            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗶𝗼𝘀𝗱* <num> <amt> — flood',
+            '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷 / 𝙵𝚁𝙴𝙴𝚉𝙴`*',
+            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀* <num>',
+            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀𝗱* <num>',
+            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗶𝗼𝘀* <num> ',
             '┃𖤍│➣ *.𝗶𝗼𝘀-𝘇𝗸* <num> — ×60 loc/mention bomb',
             '┃𖤍│',
             '┃𖤍│ ᖫ *𝙷𝚈𝙱𝚁𝙸𝙳 𝙽𝚄𝙺𝙴* ᖭ',
-            '┃𖤍│ ╰━➤ *`𝙵𝚅𝙲𝙺𝙱𝙸𝚃𝙲𝙷`*',
+            '┃𖤍│      ╰━➤ *`𝙵𝚅𝙲𝙺𝙱𝙸𝚃𝙲𝙷`*',
             '┃𖤍│➣ *.𝗮𝗻𝗱𝗿𝗼-𝗻𝘂𝗸𝗲* <num> [rounds] — ×10 per round',
             '┃𖤍│',
             '┃𖤍│ ᖫ *𝙶𝚁𝙾𝚄𝙿* ᖭ',
-            '┃𖤍│ ╰━➤ *`𝙲𝚁𝙰𝚂𝙷𝙲𝙻𝙸𝙲𝙺`*',
+            '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷𝙲𝙻𝙸𝙲𝙺`*',
             '┃𖤍│➣ *.𝗴𝗯* yes — in group ×10',
             '┃𖤍│➣ *.𝗴𝗯* <invite link> — group ×10',
             '┆𖤍╰────↯',
             '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
             '',
-            '⚠️ Test build — temporary antibug test commands.',
+            '> please dont spam to aviod bans, i didnt say dont use, just type the name of the command you wanna use and youll see how to use it',
             `Main menu: ${prefix}menu`
         ].join('\n');
 
@@ -8793,7 +8791,7 @@ function gitEnsureRepo() {
         gitShQ('git init');
     }
     try { gitShQ('git config --global --add safe.directory ' + JSON.stringify(__dirname)); } catch (_) {}
-    const remoteUrl = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-original.git').trim();
+    const remoteUrl = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-omega-bug-test.git').trim();
     try {
         gitShQ(`git remote add origin ${remoteUrl}`);
     } catch (_) {
