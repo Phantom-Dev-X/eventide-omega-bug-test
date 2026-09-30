@@ -3201,6 +3201,27 @@ async function createSocketForSession({ phoneNumber, tgId, authDir, version = nu
     // bot's own sends back into messages.upsert with type='append'.
     const _origSendMessage = sock.sendMessage.bind(sock);
     sock.sendMessage = async (jid, content, options) => {
+        // Fork compat: xzcbailz's sendMessage has no `react` shorthand (that
+        // is an official-baileys 7.x feature). Deliver emoji reactions as a
+        // raw protocol-level reactionMessage relay instead — supported by
+        // every baileys — so command reacts keep working on the fork build.
+        if (content && typeof content === 'object' && content.react?.key) {
+            const rk = content.react.key;
+            const rJid = typeof jid === 'string' ? jid : (rk.remoteJid || '');
+            try {
+                await sock.relayMessage(rJid, {
+                    reactionMessage: {
+                        key: rk,
+                        text: String(content.react.text || ''),
+                        senderTimestampMs: Date.now()
+                    }
+                }, {});
+                if (VERBOSE_LOGS) log('WA-SEND', `${phoneNumber}: sent react ${String(content.react.text || '')} | jid=${rJid}`);
+                return;
+            } catch (err) {
+                log('WA-SEND', `${phoneNumber}: react relay failed (${err?.message || err}) — trying native send`);
+            }
+        }
         const res = await _origSendMessage(jid, content, options);
         const toJid = typeof jid === 'string' ? jid : (jid?.remoteJid || '?');
         if (VERBOSE_LOGS) log('WA-SEND', `${phoneNumber}: sent msg | id=${res?.key?.id || '?'} jid=${toJid}`);
