@@ -3865,32 +3865,30 @@ async function sendMenuPoll(sock, remoteJid, phoneNumber, question, options, ids
     const secret = crypto.randomBytes(32);
     log('POLL-SEND', `${phoneNumber}: sending poll to ${remoteJid} | options=${pollOptions.length} | question=${JSON.stringify(trimForLog(question, 80))}`);
 
-    // Use the fork's native poll input without additionalNodes. Its content
-    // generator creates pollCreationMessageV3 for selectableCount=1, and its
-    // relay layer adds the one required polltype=creation metadata node.
-    const pollMsg = await sock.sendMessage(remoteJid, {
-        poll: {
+    // xzcbailz's high-level `{ poll: ... }` generator produces V3. Runtime
+    // logs proved that V3 was built and relayed to the self-chat LID, yet the
+    // server never acknowledged/rendered it. Build the widely-compatible V1
+    // poll envelope directly instead. relayMessage() still handles encryption,
+    // message type="poll", and the single required polltype=creation meta node.
+    const pollContent = proto.Message.create({
+        messageContextInfo: { messageSecret: secret },
+        pollCreationMessage: {
             name: String(question),
-            values: pollOptions,
-            selectableCount: 1,
-            messageSecret: secret
+            options: pollOptions.map(optionName => ({ optionName })),
+            selectableOptionsCount: 1
         }
     });
-    if (!pollMsg?.key?.id) {
-        throw new Error('The poll send returned no message ID.');
+    const pollMsg = generateWAMessageFromContent(remoteJid, pollContent, {
+        userJid: sock.user?.id
+    });
+    if (!pollMsg?.key?.id || !pollMsg?.message?.pollCreationMessage) {
+        throw new Error('Could not generate the V1 poll envelope.');
     }
 
-    const wireType = pollMsg?.message?.pollCreationMessageV3
-        ? 'pollCreationMessageV3'
-        : pollMsg?.message?.pollCreationMessageV2
-            ? 'pollCreationMessageV2'
-            : pollMsg?.message?.pollCreationMessage
-                ? 'pollCreationMessage'
-                : 'MISSING_POLL_PAYLOAD';
-    if (wireType === 'MISSING_POLL_PAYLOAD') {
-        throw new Error(`Poll ${pollMsg.key.id} was generated without a poll payload.`);
-    }
-    log('POLL-SEND', `${phoneNumber}: poll dispatched | id=${pollMsg.key.id} | type=${wireType} | jid=${remoteJid}`);
+    await sock.relayMessage(remoteJid, pollMsg.message, {
+        messageId: pollMsg.key.id
+    });
+    log('POLL-SEND', `${phoneNumber}: poll relayed | id=${pollMsg.key.id} | type=pollCreationMessage(V1) | jid=${remoteJid}`);
 
     const actualSecret =
         pollMsg?.message?.messageContextInfo?.messageSecret ||
