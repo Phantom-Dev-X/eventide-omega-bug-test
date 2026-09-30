@@ -15,11 +15,14 @@ ALREADY LATEST). Details: **[AUTO_DEPLOY.md](./AUTO_DEPLOY.md)**.
 
 ## One-file installer (recommended)
 
-Upload `panel-install.sh` to the panel's home folder and set the startup command to:
+Upload `panel-install.js` to the panel's home folder and set the startup command to:
 
 ```bash
-bash panel-install.sh
+node panel-install.js
 ```
+
+This is plain Node.js; Bash is not required. (`panel-install.sh` remains
+available as an alternative for Linux panels.)
 
 On its first run it clones this repository, creates a safe local-disk `.env`,
 installs production dependencies, and starts `boot.js`. On later starts it
