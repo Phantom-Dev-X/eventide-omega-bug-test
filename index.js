@@ -2061,14 +2061,14 @@ const HELP_FACT_SHEET = `HARD TRUTH RULES:
    • .antilink / .antimention / .antiforward — per-group wards, armed IN the group or with ".antilink on <invite>"
    • .warn  +  .warnconfig (phrases/limits/actions) / .unwarn / .warns / .warnreset
    • .welcome / .goodbye (set group greet texts) + .greet (view/toggle)
-   • .persona eclipse|ruin — switches the bot's whole look & feel
+   • .persona poll|reset|eclipse|ruin — resend/reset chooser or switch directly
    • .helpconfig eclipse|ruin — the AI help voice (eclipse = cinematic oracle · ruin = friendly support)
    • .pluginkey <gemini-key> — owner's personal AI keys
    • .menu — the front door (Eclipse = cinematic animated menu; Ruin = status panel + menu poll)
 
 REGISTRY (every command below is real):
 MENU & HELP: .menu  .help (alone = help MODE; .help <anything> = one-shot answer; .mhelp / .jelp aliases)  .help list
-PERSONA: .persona eclipse|ruin  (.persona alone shows the current binding; UNBOUND = pick via the poll)
+PERSONA: .persona poll|reset|eclipse|ruin  (.persona poll resends the chooser; .persona reset clears the binding and sends a fresh poll)
 HELP PERSONA: .helpconfig eclipse|ruin  (👑 — the voice of the help AI; .helpconfig alone shows the current voice)
 SUDO: .addsudo  .removesudo/.delsudo  .sudos  (👑 owner-only — reply to someone's message or pass number/@mention; sudoes command the bot even in owner mode)
 CONFIG: .mode public|owner  .public  .owner  .setprefix <.>  .setalias  .delalias  .aliases  .setname  .setbio  .setstatus  .setpp  .getpp  .profile  .settings  .reset  .pluginkey <key>  .plugin
@@ -2089,7 +2089,7 @@ FEATURE CHEAT SHEET (be exact):
 • ANTIDELETE: 👑 recovers deleted messages from watched chats and forwards them to the owner DM. Same endpoint flow: .antideleteconfig, then .antidelete on.
 • WARN: .warn replies to a message or mention. .warnconfig sets max warns, trigger phrases, kick action per group. .warns lists, .unwarn removes, .warnreset clears.
 • GROUP LOCK: .lock / .unlock (group admins only) toggles WhatsApp announcement mode — locked = ONLY admins can send messages, unlocked = everyone can. NOT the same as .mute/.unmute (those silence ONE user's messages) — never suggest .mute when someone asks to lock a group.
-• PERSONA: the bot's whole identity — 🌑 ECLIPSE (cinematic 3-stage animated menu) or ⚙️ RUIN (clean minimal panel + categorized command index). First pairing sends a poll; the pick is saved forever (no re-pairing). 👑 .persona eclipse|ruin switches anytime. If a user's commands are blocked by "PERSONA FIRST", they must pick in the poll first.
+• PERSONA: the bot's whole identity — 🌑 ECLIPSE (cinematic 3-stage animated menu) or ⚙️ RUIN (clean minimal panel + categorized command index). First pairing sends a poll; the pick is saved forever (no re-pairing). 👑 .persona poll resends the chooser, .persona reset clears the binding and sends a fresh poll, and .persona eclipse|ruin switches directly. If commands are blocked by "PERSONA FIRST", the owner can run .persona poll.
 • HELP PERSONA: 👑 .helpconfig eclipse|ruin — the voice of the help AI: ECLIPSE = cinematic oracle · RUIN = friendly customer-care agent. While unbound, the first .help asks via a poll (deleted after the pick). .helpconfig alone shows the current voice.
 • SUDO: 👑 .addsudo (reply to someone's message, or .addsudo 234xxxxxxxxx / @mention) elevates them — sudoes can command the bot even in owner mode. .removesudo/.delsudo revokes, .sudos lists. Persisted per session (Supabase on Render / disk on panel). Sudoes can also vote on menu/game polls (but NEVER on bot-config polls — persona, helpconfig, autoreact/antidelete/warn setups stay owner-only), and .help answers sudoes too.
 • HELP MODE: .help alone toggles help mode ON/OFF — while ON, every message is answered by the help AI and other commands don't run. .help <question> answers once without entering help mode. Times out after 10 min silence.
@@ -2175,7 +2175,7 @@ function getStaticHelpAnswer(rawQuestion) {
         blocks.push(`⚡ *WARN SYSTEM*\n• *.warn* (reply to a msg or mention) — warns a user\n• *.warnconfig* — phrases, max warns, kick action per group\n• *.warns* — list warns · *.unwarn* — remove\n• *.warnreset* — clear all\n\n" patience is a currency. "`);
     }
     if (has('persona')) {
-        blocks.push(`⚡ *PERSONA SYSTEM* 👑 owner-only\nTwo faces, one void:\n\n• 🌑 *.persona eclipse* — cinematic 3-stage animated menu\n• ⚙️ *.persona ruin* — clean panel + categorized command index\n\nFirst pairing sends a poll — pick once, saved forever.\n*.persona* alone shows the current binding.\n\n" choose your face. "`);
+        blocks.push(`⚡ *PERSONA SYSTEM* 👑 owner-only\nTwo faces, one void:\n\n• 🎭 *.persona poll* — resend the chooser\n• ♻️ *.persona reset* — clear + choose again\n• 🌑 *.persona eclipse* — cinematic 3-stage animated menu\n• ⚙️ *.persona ruin* — clean panel + categorized command index\n\nFirst pairing sends a poll — pick once, saved forever.\n*.persona* alone shows the current binding.\n\n" choose your face. "`);
     }
     if (has('menu')) {
         blocks.push(`⚡ *MENU*\n*.menu* opens your persona's menu:\n\n• 🌑 ECLIPSE — animated terminal + banner + Owners/Group/Fun poll\n• ⚙️ RUIN — status panel + poll (ALL MENU · SYSTEM · CONFIG · GROUP · FUN)\n\n" step inside. "`);
@@ -6019,19 +6019,64 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    // .persona eclipse|ruin — switch this session's persona (owner only).
-    // Same switch the first-pair poll writes, for people who want to change
-    // later without re-pairing.
+    // .persona eclipse|ruin — switch directly.
+    // .persona poll — resend the chooser without changing the current binding.
+    // .persona reset — clear the binding and resend the first-pair chooser.
     if (token === '.persona') {
         if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
         const val = (args[0] || '').toLowerCase();
         const curRaw = String(loadBotConfig(phoneNumber).persona || '').trim().toLowerCase();
         const cur = ['eclipse', 'ruin'].includes(curRaw) ? curRaw : 'UNBOUND';
+
+        if (val === 'poll' || val === 'choose' || val === 'reset') {
+            const cfg = loadBotConfig(phoneNumber);
+            if (val === 'reset') {
+                cfg.persona = '';
+                saveBotConfig(phoneNumber, cfg);
+            }
+
+            // Remove any stale in-memory poll reference. A failed/hidden old
+            // poll must never prevent the owner from requesting a fresh one.
+            const oldKey = personaPollKeys.get(phoneNumber);
+            personaPollKeys.delete(phoneNumber);
+            if (oldKey?.id) {
+                try {
+                    await sock.sendMessage(oldKey.remoteJid || remoteJid, {
+                        delete: {
+                            remoteJid: oldKey.remoteJid || remoteJid,
+                            id: oldKey.id,
+                            fromMe: true
+                        }
+                    });
+                } catch (_) {}
+            }
+
+            await safeWaReply(sock, remoteJid,
+                val === 'reset'
+                    ? '🎭 *PERSONA RESET*\n\nYour old binding was cleared.\nChoose a fresh persona below 👇'
+                    : `🎭 *PERSONA CHOOSER*\n\nCurrent: *${cur.toUpperCase()}*\nChoose below 👇`,
+                msg
+            );
+            const pollMsg = await sendMenuPoll(
+                sock,
+                remoteJid,
+                phoneNumber,
+                PERSONA_POLL_QUESTION,
+                PERSONA_POLL_OPTIONS,
+                PERSONA_POLL_IDS
+            );
+            if (pollMsg?.key) personaPollKeys.set(phoneNumber, pollMsg.key);
+            log('PERSONA', `${phoneNumber}: persona chooser resent by .persona ${val} (${pollMsg?.key?.id || '?'})`);
+            return;
+        }
+
         if (val !== 'eclipse' && val !== 'ruin') {
             await safeWaReply(sock, remoteJid, buildOmegaTerminal(
                 `   ░▒▓█ *PERSONA* █▓▒░\n\n` +
                 `   ✦ *ACTIVE* :: ${cur.toUpperCase()}\n\n` +
-                `   use: .persona eclipse\n` +
+                `   use: .persona poll\n` +
+                `        .persona reset\n` +
+                `        .persona eclipse\n` +
                 `        .persona ruin\n\n` +
                 `   \" eclipse — cinematic.\n     ruin    — clean. \"`
             ), msg);
@@ -6040,6 +6085,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         const cfg = loadBotConfig(phoneNumber);
         cfg.persona = val;
         saveBotConfig(phoneNumber, cfg);
+        personaPollKeys.delete(phoneNumber);
         await safeWaReply(sock, remoteJid, buildOmegaTerminal(
             `   ░▒▓█ *PERSONA* █▓▒░\n\n` +
             `   ✦ *BOUND* :: ${val.toUpperCase()}\n` +
