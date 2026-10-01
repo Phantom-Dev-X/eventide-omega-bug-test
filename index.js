@@ -8785,12 +8785,32 @@ if (tgBot) {
         if (!parts.length) {
             await safeTgSend(chatId,
                 '🧹 *Unbug — remove sent bug messages*\n\n' +
-                'Usage:\n`/unbug <receiver>` — auto (any of your bots)\n`/unbug <sender> <receiver>` — through the bot that sent it\n`/unbug all` — clean every tracked target\n\n' +
+                'Usage:\n`/unbug <receiver>` — auto (any of your bots)\n`/unbug <sender> <receiver>` — through the bot that sent it\n`/unbug all` — clean every tracked target\n\nReceiver can be a number, a group JID, or a group *invite link*.\n\n' +
                 'Deletes bug messages from the last 72h — for everyone, so the target is unbugged too. One message every 3 seconds.');
             return;
         }
 
         const normJid = s => String(s || '').includes('@') ? s : `${String(s || '').replace(/\D/g, '')}@s.whatsapp.net`;
+        // Receiver can also be a group INVITE LINK — resolve it to the group
+        // JID exactly like .gb does (any active session can fetch invite info).
+        const resolveInvite = async code => {
+            for (const [, session] of waSessions) {
+                if (!session?.sock?.user?.id) continue;
+                try {
+                    const info = await session.sock.groupGetInviteInfo(code);
+                    if (info?.id) return info.id;
+                } catch (_) {}
+            }
+            return null;
+        };
+        const asReceiverJid = async arg => {
+            arg = String(arg || '');
+            if (arg.includes('chat.whatsapp.com/')) {
+                const code = arg.split('chat.whatsapp.com/')[1].split(/[?\s]/)[0].trim();
+                return code ? (await resolveInvite(code)) : null;
+            }
+            return normJid(arg);
+        };
         const jobs = [];
         if (parts[0].toLowerCase() === 'all') {
             for (const [phoneNumber, session] of waSessions) {
@@ -8798,14 +8818,22 @@ if (tgBot) {
                 if (entries.length && session?.sock?.user?.id) jobs.push({ phoneNumber, sock: session.sock, entries });
             }
         } else if (parts.length === 1) {
-            const tJid = normJid(parts[0]);
+            const tJid = await asReceiverJid(parts[0]);
+            if (!tJid) {
+                await safeTgSend(chatId, '❌ Could not resolve that invite link — is it valid?');
+                return;
+            }
             for (const [phoneNumber, session] of waSessions) {
                 const entries = loadBugSends(phoneNumber).filter(e => e.jid === tJid);
                 if (entries.length && session?.sock?.user?.id) jobs.push({ phoneNumber, sock: session.sock, entries });
             }
         } else {
             const senderNum = parts[0].replace(/\D/g, '');
-            const tJid = normJid(parts[1]);
+            const tJid = await asReceiverJid(parts[1]);
+            if (!tJid) {
+                await safeTgSend(chatId, '❌ Could not resolve that invite link — is it valid?');
+                return;
+            }
             const session = waSessions.get(senderNum);
             if (!session?.sock?.user?.id) {
                 await safeTgSend(chatId, `❌ *${senderNum || '?'}* is not a paired/active bot session.`);
