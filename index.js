@@ -131,6 +131,8 @@ import {
     tttGames,
     tttSetupSessions
 } from './src/core/state.js';
+import { createDevHelpers } from './src/core/dev-helpers.js';
+import { createGitUpdateService } from './src/services/git-update-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -158,6 +160,20 @@ const {
     GROUP_CHANNEL_LINK,
     VERBOSE_LOGS
 } = environmentConfig;
+
+const devHelpers = createDevHelpers({ devIds: DEV_IDS });
+const { isDev, isDevNumber, countSystemCommands } = devHelpers;
+
+const gitUpdateService = createGitUpdateService({ rootDir: __dirname, log, logError });
+const {
+    truncateCommitName,
+    gitShQ,
+    gitEnsureRepo,
+    gitRemoteName,
+    gitCheck,
+    pullLatestCode,
+    relaunchSelf
+} = gitUpdateService;
 
 const menuAssets = createMenuAssets({ groupChannelLink: GROUP_CHANNEL_LINK });
 const {
@@ -296,32 +312,6 @@ const {
     saveUserMap,
     loadUserMap
 } = sessionStore;
-
-function isDev(chatId) {
-    if (DEV_IDS.length === 0) return true;
-    return DEV_IDS.includes(Number(chatId));
-}
-
-// Dev numbers come from the RENDER env var DEV_NUMBERS (comma-separated).
-// Returns true if the given jid (or raw number) belongs to a dev.
-// Count the number of registered dot-commands (for .cmdstats/.botinfo).
-function countSystemCommands() {
-    const known = [
-        'menu','help','ping','uptime','runtime','info','status','version','os','botinfo','alive','dev','gpp','ggpp','profile',
-        'listgc','session','sessions','logout','reconnect','sticker','toimg','vv','viewonce','qr','calc','base64','block','unblock',
-        'cmdstats','restart','shutdown','autoreact','mode','public','owner','setprefix','setalias','delalias',
-        'aliases','setname','setbio','setpp','settings','reset','join','add','kick','link','autoreactconfig','antidelete','antideleteconfig','del','hidetag','ht','warn','unwarn','warns','warnconfig','warnreset','ttt','tictactoe','xo','hangman','chain','trivia','riddle'
-    ];
-    return known.length;
-}
-
-function isDevNumber(jid) {
-    const raw = process.env.DEV_NUMBERS || '';
-    const devs = raw.split(',').map(s => s.replace(/\D/g, '').trim()).filter(Boolean);
-    if (!devs.length) return false;
-    const num = String(jid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
-    return devs.includes(num);
-}
 
 // ──────────────────────────────────────────────
 // 🔧 BAILEYS HELPERS
@@ -1590,92 +1580,6 @@ async function startWebTunnel(port) {
 let httpServer = null;         // express server (closed on shutdown)
 
 // Commit subjects can be long — keep the WhatsApp card short.
-function truncateCommitName(name, max = 38) {
-    const s = String(name || 'unknown commit').trim() || 'unknown commit';
-    return s.length > max ? s.slice(0, max - 1) + '…' : s;
-}
-
-// Git helpers used by .gitpull. If the folder has no .git (files copied
-// without history), we init + attach origin + fetch — i.e. clone in place.
-function gitShQ(cmd, timeoutMs = 60000) {
-    return execSync(cmd, {
-        cwd: __dirname,
-        encoding: 'utf8',
-        timeout: timeoutMs, // a sync op can never block the event loop forever —
-                            // the shutdown handler must always be able to run
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
-    });
-}
-
-function gitEnsureRepo() {
-    if (!fs.existsSync(path.join(__dirname, '.git'))) {
-        log('GIT', 'no .git folder — initializing fresh repo (clone in place).');
-        gitShQ('git init');
-    }
-    try { gitShQ('git config --global --add safe.directory ' + JSON.stringify(__dirname)); } catch (_) {}
-    const remoteUrl = String(process.env.GIT_REMOTE_URL || 'https://github.com/Phantom-Dev-X/eventide-omega-bug-test.git').trim();
-    try {
-        gitShQ(`git remote add origin ${remoteUrl}`);
-    } catch (_) {
-        try { gitShQ(`git remote set-url origin ${remoteUrl}`); } catch (_) {}
-    }
-}
-
-function gitRemoteName() {
-    try { return gitShQ('git log -1 --pretty=%s origin/main').trim() || 'unknown commit'; }
-    catch (_) { return 'unknown commit'; }
-}
-
-// Light check: fetch + compare. Returns { changed, name } — no checkout.
-async function gitCheck() {
-    gitEnsureRepo();
-    gitShQ('git fetch --depth 1 origin main');
-    const local = gitShQ('git rev-parse HEAD').trim();
-    const remote = gitShQ('git rev-parse origin/main').trim();
-    return { changed: local !== remote, name: gitRemoteName() };
-}
-
-// Full pull: fetch + force-checkout + npm install if package.json changed.
-// Returns { changed, commit, name }.
-async function pullLatestCode() {
-    gitEnsureRepo();
-    gitShQ('git fetch --depth 1 origin main');
-    const local = gitShQ('git rev-parse HEAD').trim();
-    const remote = gitShQ('git rev-parse origin/main').trim();
-    if (local === remote) return { changed: false, commit: local, name: gitRemoteName() };
-    let pkgBefore = '';
-    try { pkgBefore = gitShQ('git rev-parse HEAD:package.json').trim(); } catch (_) {}
-    gitShQ('git checkout -f -B main origin/main');
-    let commit = remote;
-    try { commit = gitShQ('git rev-parse HEAD').trim(); } catch (_) {}
-    const name = gitRemoteName();
-    try { fs.writeFileSync(path.join(__dirname, 'CURRENT_COMMIT.txt'), `${commit} ${name}\n`, 'utf8'); } catch (_) {}
-    let pkgAfter = '';
-    try { pkgAfter = gitShQ('git rev-parse HEAD:package.json').trim(); } catch (_) {}
-    if (pkgBefore && pkgAfter && pkgBefore !== pkgAfter) {
-        log('GIT', 'package.json changed — installing dependencies...');
-        try { gitShQ('npm install --omit=dev --no-audit --no-fund', 180000); } catch (err) {
-            logError('GIT', 'npm install failed', err);
-        }
-    }
-    return { changed: true, commit, name };
-}
-
-function relaunchSelf() {
-    const entry = path.join(__dirname, 'index.js');
-    // New process waits a few seconds before binding the port, giving this
-    // process time to exit and free it (no EADDRINUSE on the panel).
-    const childProc = spawn(process.execPath, [entry], {
-        cwd: __dirname,
-        detached: true,
-        stdio: 'inherit',
-        env: { ...process.env, EVENTIDE_BIND_DELAY_MS: '3500' }
-    });
-    childProc.unref();
-    log('GIT', 'new bot process spawned — old process exiting in 1.5s...');
-    setTimeout(() => process.exit(0), 1500);
-}
-
 async function main() {
     const buildStartedAt = Date.now();
     initGames({
