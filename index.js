@@ -61,6 +61,7 @@ import { createCommandRegistry } from './src/commands/registry.js';
 import { createBasicSystemCommands } from './src/commands/system/basic.js';
 import { createSessionSystemCommands } from './src/commands/system/session.js';
 import { createAccountSystemCommands } from './src/commands/system/account.js';
+import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3272,6 +3273,21 @@ const commandRegistry = createCommandRegistry([
         buildOmegaTerminal,
         normalizeJid: jidNormalizedUser,
         isDevNumber,
+        logError
+    }),
+    ...createOwnerOperationCommands({
+        authDirRoot: AUTH_DIR,
+        waSessions,
+        webPairSessions,
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        runLocalBackup,
+        safeRm,
+        isSupabaseEnabled,
+        deleteSessionFromSupabase,
+        shutdownBot,
+        log,
         logError
     })
 ]);
@@ -6658,44 +6674,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    // .backup — snapshot accounts + sessions to backups/
-    if (token === '.backup') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const dest = runLocalBackup('command', log, logError);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            dest
-                ? `   ░▒▓█ *BACKUP_OK* █▓▒░\n\n   ✦ *SNAP* :: ${path.basename(dest)}\n   ✦ *WHERE* :: backups/\n\n   \" The disk remembers. \"`
-                : `   ░▒▓█ *BACKUP_FAIL* █▓▒░\n\n   Check the panel console.`
-        ), msg);
-        return;
-    }
-
-    // .restart — owner-only reboot
-    if (token === '.restart') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Dev only.', msg); return; }
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_REBOOT* █▓▒░\n\n` +
-            `   ⚡ *STATUS* :: RESTARTING\n` +
-            `   🔄 *ACTION* :: REINITIALIZE_CORE\n\n` +
-            `   " *Death is a door.*\n     *I step through and return.* "`
-        ), msg);
-        setTimeout(() => process.exit(0), 1500);
-        return;
-    }
-
-    // .shutdown — owner-only power down
-    if (token === '.shutdown') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Dev only.', msg); return; }
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_POWER_DOWN* █▓▒░\n\n` +
-            `   ⚡ *STATUS* :: SHUTDOWN\n` +
-            `   🔌 *ACTION* :: VOID_SLEEP\n\n` +
-            `   " *The machine sleeps.*\n     *But it always wakes.* "`
-        ), msg);
-        setTimeout(() => shutdownBot('.shutdown command'), 1200);
-        return;
-    }
-
     // .autoreact on|off — toggle auto-reaction (system menu)
     if (token === '.autoreact') {
         if (!isSenderOwner) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
@@ -6888,37 +6866,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
     // ──────────────────────────────────────────────
-
-    // .reconnect — force reconnect current socket
-    if (token === '.reconnect') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_RECONNECT* █▓▒░\n\n` +
-            `   ⚡ *ACTION* :: FORCE_RECONNECT\n\n` +
-            `   " The thread is severed\n     and rewoven. "`
-        ), msg);
-        setTimeout(() => { try { sock.end(undefined); } catch (_) {} }, 800);
-        return;
-    }
-
-    // .logout — log out the paired account (delete session)
-    if (token === '.logout') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_LOGOUT* █▓▒░\n\n` +
-            `   🔌 *ACTION* :: UNLINK_SESSION\n` +
-            `   ⚠️ *NOTE* :: You will need to\n   re-pair this number after.\n\n` +
-            `   " The vessel is released\n     back to the void. "`
-        ), msg);
-        setTimeout(() => {
-            try { sock.logout().catch(()=>{}); } catch (_) {}
-            safeRm(path.join(AUTH_DIR, phoneNumber));
-            waSessions.delete(phoneNumber);
-            webPairSessions.delete(phoneNumber);
-            if (isSupabaseEnabled()) deleteSessionFromSupabase(phoneNumber);
-        }, 1500);
-        return;
-    }
 
     // .sticker — reply to image/video -> make a sticker
     if (token === '.sticker') {

@@ -24,6 +24,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/basic.js` — low-risk runtime and host information commands
 - `src/commands/system/session.js` — health, deployment, and session visibility commands
 - `src/commands/system/account.js` — developer contact, group listing, and account profile commands
+- `src/commands/system/owner-operations.js` — privileged backup, process control, reconnect, and logout operations with injected side-effect boundaries
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
