@@ -60,6 +60,7 @@ import { createMessageConfigInputService } from './src/whatsapp/message-config-i
 import { createCommandRegistry } from './src/commands/registry.js';
 import { createBasicSystemCommands } from './src/commands/system/basic.js';
 import { createSessionSystemCommands } from './src/commands/system/session.js';
+import { createAccountSystemCommands } from './src/commands/system/account.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3265,6 +3266,13 @@ const commandRegistry = createCommandRegistry([
         isDevNumber,
         countSystemCommands,
         isRenderRuntime: IS_RENDER_RUNTIME
+    }),
+    ...createAccountSystemCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        normalizeJid: jidNormalizedUser,
+        isDevNumber,
+        logError
     })
 ]);
 
@@ -6650,45 +6658,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    // .dev / .devnumber / .devcontact — the architect
-    if (token === '.dev' || token === '.devnumber' || token === '.devcontact') {
-        const devNum = (process.env.DEV_NUMBERS || "2348102756072").split(",")[0].trim();
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `      ◢◤ *THE ARCHITECT* ◢◤\n\n` +
-            `      [ 👤 ] : Phantom dev x\n` +
-            `      [ 🌐 ] : wa.me/${devNum}\n` +
-            `      [ 🏮 ] : *PRIMARY_VESSEL_01*\n\n` +
-            `   " *Creation is the first step*\n     *toward destruction* ."`
-        ), msg);
-        return;
-    }
-
-
-
-
-
-
-    
-
-    // .listgc — list groups the bot is in
-    if (token === '.listgc') {
-        try {
-            const groups = await sock.groupFetchAllParticipating();
-            const names = Object.values(groups).map(g => g.subject).filter(Boolean);
-            const list = names.length ? names.map(n => `   • ${n}`).join('\n') : '   • _no groups_';
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *DOMINIONS* █▓▒░\n\n` +
-                `   🌐 *COUNT* :: ${names.length}\n\n` +
-                `${list}\n\n` +
-                `   " *Every group is a domain*\n     *under the eclipse.* "`
-            ), msg);
-        } catch (err) {
-            logError('SYSTEM', 'Failed to fetch groups', err);
-            await safeWaReply(sock, remoteJid, `❌ Could not fetch groups. Error: ${err?.message}`, msg);
-        }
-        return;
-    }
-
     // .backup — snapshot accounts + sessions to backups/
     if (token === '.backup') {
         if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
@@ -6919,24 +6888,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
     // ──────────────────────────────────────────────
-
-    // .profile — show the host account's own info
-    if (token === '.profile') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const myJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : phoneNumber;
-        let name = 'unknown', about = '';
-        try { const pp = await sock.profilePictureUrl(myJid, 'image'); name = pp ? 'set' : 'none'; } catch (_) { name = 'none'; }
-        try { const st = await sock.fetchStatus(myJid); about = (st && st[0]?.status) || ''; } catch (_) {}
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *VESSEL_IDENTITY* █▓▒░\n\n` +
-            `   📱 *NUMBER* :: ${phoneNumber}\n` +
-            `   👤 *NAME* :: ${botConfig.name || '(account default)'}\n` +
-            `   🖼️ *PP* :: ${name}\n` +
-            `   📝 *BIO* :: ${about || botConfig.bio || '(none)'}\n\n` +
-            `   " This is the face the\n     void shows the world. "`
-        ), msg);
-        return;
-    }
 
     // .reconnect — force reconnect current socket
     if (token === '.reconnect') {

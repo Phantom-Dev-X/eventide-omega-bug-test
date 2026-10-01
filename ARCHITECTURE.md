@@ -23,6 +23,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/registry.js` — command registration, alias lookup, and dispatch
 - `src/commands/system/basic.js` — low-risk runtime and host information commands
 - `src/commands/system/session.js` — health, deployment, and session visibility commands
+- `src/commands/system/account.js` — developer contact, group listing, and account profile commands
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
