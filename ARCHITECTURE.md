@@ -49,6 +49,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/group/warnings.js` — warning mutations, ledgers, authorization, and warning-menu initialization
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `src/telegram/commands.js` — Telegram bot command surface: /start, /pair, pairing-number text intake, /status, /unbug, /disconnect, and /help
+- `src/personas/ruin-interface.js` — Ruin persona status panel, command-index, and category-menu rendering plus the `.menu` status-panel/poll send (the shared poll-vote dispatcher that routes votes to these builders stays in index.js)
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
 
