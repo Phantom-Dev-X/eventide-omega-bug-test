@@ -12,6 +12,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/core/context.js` — dependency container for future feature modules
 - `src/whatsapp/pairing.js` — Telegram/web pairing and startup restoration coordinator
 - `src/whatsapp/socket.js` — socket construction, send tracing, credential persistence, and bulk shutdown
+- `src/whatsapp/reconnection.js` — disconnect cleanup, bounded retries, and non-destructive 428 recovery
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests

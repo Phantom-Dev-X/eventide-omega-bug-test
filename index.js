@@ -49,6 +49,7 @@ import { parseInviteOrJid, listParticipatingGroups, resolveAndJoinTarget } from 
 import { createEnvironmentConfig } from './src/config/env.js';
 import { createPairingService } from './src/whatsapp/pairing.js';
 import { createSocketService } from './src/whatsapp/socket.js';
+import { createReconnectionService } from './src/whatsapp/reconnection.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3084,115 +3085,35 @@ const { createSocketForSession, stopAllSessions } = socketService;
 // ──────────────────────────────────────────────
 // 🔌 SOCKET / SESSION MANAGEMENT
 // ──────────────────────────────────────────────
-async function cleanupDisconnectedSession({ phoneNumber, tgId, authDir, notifyText = null, removeAuthDir = false, reason = 'unspecified' }) {
-    log('SESSION', `${phoneNumber}: cleaning up session. Reason: ${reason}`);
-    waSessions.delete(phoneNumber);
+const reconnectionService = createReconnectionService({
+    waSessions,
+    reconnectAttempts,
+    connectionClosed428s: connClosed428s,
+    safeRm,
+    isSupabaseEnabled,
+    deleteSessionFromSupabase,
+    clearTelegramUser,
+    setTelegramUserState,
+    saveUserMap,
+    safeTgSend,
+    createSocketForSession,
+    resetBaileysVersionCache: () => {
+        cachedBaileysVersion = null;
+        cachedBaileysVersionAt = 0;
+    },
+    getBaileysVersion,
+    delay,
+    getClose428BaseDelayMs: () => parseInt(process.env.CLOSE428_DELAY_MS || '5000', 10) || 5000,
+    getClose428StormBackoffMs: () => parseInt(process.env.CLOSE428_STORM_BACKOFF_MS || '600000', 10) || 600000,
+    log,
+    logError
+});
 
-    if (removeAuthDir) {
-        safeRm(authDir);
-        if (isSupabaseEnabled()) {
-            await deleteSessionFromSupabase(phoneNumber);
-        }
-    }
-
-    if (tgId !== null && typeof tgId !== 'undefined') {
-        clearTelegramUser(tgId);
-        saveUserMap();
-        if (notifyText) await safeTgSend(tgId, notifyText);
-    }
-}
-
-// ⚠️ 428 connectionClosed — reconnect safely, never delete the session.
-async function handleConnectionClosed428({ sock, phoneNumber, tgId, authDir, isRestore }) {
-    const liveSession = waSessions.get(phoneNumber);
-    if (liveSession?.sock && liveSession.sock !== sock) {
-        log('SOCKET', `${phoneNumber}: stale 428 close ignored.`);
-        return;
-    }
-    waSessions.delete(phoneNumber);
-
-    const now = Date.now();
-    let st = connClosed428s.get(phoneNumber);
-    if (!st || now - st.windowStart > 10 * 60 * 1000) {
-        st = { count: 0, windowStart: now, lastNotifiedAt: 0 };
-    }
-    st.count += 1;
-    connClosed428s.set(phoneNumber, st);
-
-    // Storm detection: >3 closes in 10 min means something is fighting this
-    // session (almost always a second instance of the same number) — back off
-    // instead of reconnecting in a hot loop.
-    const storming = st.count > 3;
-    const baseDelay = parseInt(process.env.CLOSE428_DELAY_MS || '5000', 10) || 5000;
-    const stormBackoff = parseInt(process.env.CLOSE428_STORM_BACKOFF_MS || '600000', 10) || 600000;
-    const delayMs = storming ? stormBackoff : baseDelay + Math.floor(Math.random() * baseDelay);
-    log('SOCKET', `${phoneNumber}: 428 connectionClosed (#${st.count}). Credentials are fine — session is NOT deleted. ${storming ? 'STORM — backing off (same number running in two places?).' : 'Reconnecting with a fresh WA version...'}`);
-
-    // Fresh WhatsApp Web version — version drift is a common 428 trigger.
-    cachedBaileysVersion = null;
-    cachedBaileysVersionAt = 0;
-    let freshVersion = null;
-    try { freshVersion = await getBaileysVersion(); } catch (_) {}
-
-    if (tgId !== null && typeof tgId !== 'undefined') {
-        setTelegramUserState(tgId, { phoneNumber, status: 'connecting', sock: null });
-        saveUserMap();
-    }
-
-    await delay(delayMs);
-
-    try {
-        await createSocketForSession({ phoneNumber, tgId, authDir, version: freshVersion, isRestore });
-        log('SOCKET', `${phoneNumber}: socket rebuilt after 428 with fresh WA version.`);
-    } catch (err) {
-        logError('SOCKET', `${phoneNumber}: failed to rebuild socket after 428`, err);
-    }
-}
-
-async function restartSocketAfterClose({ closingSock, phoneNumber, tgId, authDir, version, isRestore, reason, delayMs = 5000 }) {
-    const liveSession = waSessions.get(phoneNumber);
-    if (liveSession?.sock && liveSession.sock !== closingSock) {
-        log('SOCKET', `${phoneNumber}: stale socket close ignored. Reason: ${reason}`);
-        return;
-    }
-
-    waSessions.delete(phoneNumber);
-
-    const attempts = (reconnectAttempts.get(phoneNumber) || 0) + 1;
-    reconnectAttempts.set(phoneNumber, attempts);
-
-    log('SOCKET', `${phoneNumber}: Connection closed (Attempt ${attempts}/3). Reason: ${reason}`);
-
-    if (attempts > 3) {
-        log('SOCKET', `${phoneNumber}: Max reconnect attempts (3) exceeded. Cleaning up session.`);
-        reconnectAttempts.delete(phoneNumber);
-        
-        await cleanupDisconnectedSession({
-            phoneNumber,
-            tgId,
-            authDir,
-            removeAuthDir: true,
-            reason: 'Max reconnect attempts exceeded (3)',
-            notifyText: `⚠️ *Connection Lost Permanently!*\n\n📱 ${phoneNumber}\nWe failed to reconnect after 3 attempts. This login session has been flagged as stale and deleted from Supabase.\n\nPlease link your WhatsApp again using /pair.`
-        });
-        return;
-    }
-
-    if (tgId !== null && typeof tgId !== 'undefined') {
-        setTelegramUserState(tgId, { phoneNumber, status: 'connecting', sock: null });
-        saveUserMap();
-    }
-
-    log('SOCKET', `${phoneNumber}: rebuilding socket in ${delayMs}ms. Reason: ${reason}`);
-    await delay(delayMs);
-
-    try {
-        await createSocketForSession({ phoneNumber, tgId, authDir, version, isRestore });
-        log('SOCKET', `${phoneNumber}: socket rebuilt successfully after close.`);
-    } catch (err) {
-        logError('SOCKET', `${phoneNumber}: failed to rebuild socket`, err);
-    }
-}
+const {
+    cleanupDisconnectedSession,
+    handleConnectionClosed428,
+    restartSocketAfterClose
+} = reconnectionService;
 
 function setupSocketEvents(sock, phoneNumber, tgId, authDir, version, isRestore) {
     let pairingCodeSentForThisSocket = false;
