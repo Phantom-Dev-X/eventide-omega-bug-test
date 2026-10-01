@@ -32,6 +32,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/customization.js` — command prefix, aliases, display name, and account bio customization
 - `src/commands/system/config-management.js` — profile-picture updates, settings inspection, and factory reset
 - `src/commands/system/plugin-key.js` — isolated Gemini key-pool status, append, replace, and removal operations
+- `src/commands/system/deployment.js` — guarded Git update checks, deployment, and supervised/unsupervised restart handoff
 - `src/commands/group/membership.js` — group joining, member changes, invite links, and administrator rank changes
 - `src/commands/group/information.js` — group details, visible and hidden broadcasts, and contact-card exports
 - `src/commands/group/moderation.js` — per-member muting and whole-group lock/unlock controls

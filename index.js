@@ -69,6 +69,7 @@ import { createAccessModeCommands } from './src/commands/system/access-mode.js';
 import { createCustomizationCommands } from './src/commands/system/customization.js';
 import { createConfigManagementCommands } from './src/commands/system/config-management.js';
 import { createPluginKeyCommands } from './src/commands/system/plugin-key.js';
+import { createDeploymentCommands } from './src/commands/system/deployment.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3359,6 +3360,18 @@ const commandRegistry = createCommandRegistry([
         maskApiKey,
         isValidGeminiKey
     }),
+    ...createDeploymentCommands({
+        safeWaReply,
+        isDevNumber,
+        getGitSyncBusy: () => gitSyncBusy,
+        setGitSyncBusy: value => { gitSyncBusy = value; },
+        gitCheck,
+        pullLatestCode,
+        truncateCommitName,
+        log,
+        logError,
+        relaunchSelf
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5623,51 +5636,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 🔒 PRIVACY ACCESS LOCK (.mode public / owner)
     // ──────────────────────────────────────────────
-
-    // 🛰 .gitpull — dev only: clone the latest commit from GitHub and restart
-    // the bot with it. Staged progress: checking → found new commit → deploying
-    // → deployed successfully (with the commit name).
-    if (token === '.gitpull' || token === '.gitupdate') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Dev only.', msg); return; }
-        if (gitSyncBusy) { await safeWaReply(sock, remoteJid, '⏳ *GIT SYNC* :: already running — one sec...', msg); return; }
-        gitSyncBusy = true;
-        try {
-            await safeWaReply(sock, remoteJid, '⏳ *GIT SYNC* :: checking git...', msg);
-
-            const chk = await gitCheck();
-            if (!chk.changed) {
-                await safeWaReply(sock, remoteJid,
-                    `✅ *GIT SYNC* :: already on the latest commit\n` +
-                    `   "${truncateCommitName(chk.name)}"\n\n` +
-                    `   nothing to deploy.`, msg);
-                log('GIT', `${phoneNumber}: .gitpull check — already latest (${chk.name}).`);
-            } else {
-                await safeWaReply(sock, remoteJid,
-                    `🚀 *GIT SYNC* :: found a new commit!\n` +
-                    `   "${truncateCommitName(chk.name)}"\n\n` +
-                    `   deploying...`, msg);
-                log('GIT', `${phoneNumber}: .gitpull deploying commit "${chk.name}".`);
-
-                const res = await pullLatestCode();
-                await safeWaReply(sock, remoteJid,
-                    `✅ *COMMIT DEPLOYED SUCCESSFULLY*\n` +
-                    `   "${truncateCommitName(res.name)}"\n` +
-                    `   (${(res.commit || '').slice(0, 7)})\n\n` +
-                    `   ⚡ restarting with the new build...`, msg);
-                log('GIT', `${phoneNumber}: .gitpull deployed "${res.name}" (${(res.commit || '').slice(0, 7)}) — restarting.`);
-                setTimeout(() => {
-                    if (String(process.env.EVENTIDE_SUPERVISED || '') === '1') process.exit(0);
-                    else relaunchSelf();
-                }, 1500);
-            }
-        } catch (err) {
-            logError('GIT', `${phoneNumber}: .gitpull failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ GIT SYNC failed: ${err.message || err}`, msg);
-        } finally {
-            gitSyncBusy = false;
-        }
-        return;
-    }
 
     // ──────────────────────────────────────────────
     // 👥 GROUP COMMANDS
