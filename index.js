@@ -62,6 +62,7 @@ import { createBasicSystemCommands } from './src/commands/system/basic.js';
 import { createSessionSystemCommands } from './src/commands/system/session.js';
 import { createAccountSystemCommands } from './src/commands/system/account.js';
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
+import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3288,6 +3289,16 @@ const commandRegistry = createCommandRegistry([
         deleteSessionFromSupabase,
         shutdownBot,
         log,
+        logError
+    }),
+    ...createUtilitySystemCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        loadSharp,
+        loadQrcode,
+        downloadMediaMessage,
+        createSilentLogger: () => pino({ level: 'silent' }),
+        groupChannelLink: GROUP_CHANNEL_LINK,
         logError
     })
 ]);
@@ -6866,103 +6877,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
     // ──────────────────────────────────────────────
-
-    // .sticker — reply to image/video -> make a sticker
-    if (token === '.sticker') {
-        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        const qimg = quoted?.imageMessage;
-        const qvid = quoted?.videoMessage;
-        if (!qimg && !qvid) { await safeWaReply(sock, remoteJid, '❌ Reply to an image/video with .sticker to make a sticker.', msg); return; }
-        try {
-            const srcMsg = qimg ? { imageMessage: qimg } : { videoMessage: qvid };
-            const sharpMod = loadSharp();
-            if (!sharpMod) { await safeWaReply(sock, remoteJid, '❌ Sticker processing unavailable on this host.', msg); return; }
-            const buf = await downloadMediaMessage({ message: srcMsg }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
-            let webp;
-            if (qimg) {
-                webp = await sharpMod(buf).resize(512, 512, { fit: 'contain', background: { r:0,g:0,b:0,alpha:0 } }).webp().toBuffer();
-            } else {
-                webp = await sharpMod(buf, { animated: true }).resize(512, 512, { fit: 'contain', background: { r:0,g:0,b:0,alpha:0 } }).webp().toBuffer();
-            }
-            await sock.sendMessage(remoteJid, { sticker: webp }, { quoted: msg });
-        } catch (err) {
-            logError('STICKER', 'sticker failed', err);
-            await safeWaReply(sock, remoteJid, `❌ Could not make sticker. Error: ${err?.message}`, msg);
-        }
-        return;
-    }
-
-    // .toimg — reply to sticker -> convert to image
-    if (token === '.toimg') {
-        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        const qstk = quoted?.stickerMessage;
-        if (!qstk) { await safeWaReply(sock, remoteJid, '❌ Reply to a sticker with .toimg.', msg); return; }
-        try {
-            const sharpMod = loadSharp();
-            if (!sharpMod) { await safeWaReply(sock, remoteJid, '❌ Image processing unavailable on this host.', msg); return; }
-            const buf = await downloadMediaMessage({ message: { stickerMessage: qstk } }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
-            const png = await sharpMod(buf).png().toBuffer();
-            await sock.sendMessage(remoteJid, { image: png }, { quoted: msg });
-        } catch (err) {
-            logError('TOIMG', 'toimg failed', err);
-            await safeWaReply(sock, remoteJid, `❌ Could not convert sticker. Error: ${err?.message}`, msg);
-        }
-        return;
-    }
-
-    // .qr <text> — generate a QR code
-    if (token === '.qr') {
-        const data = args.join(' ').trim();
-        if (!data) { await safeWaReply(sock, remoteJid, '❌ use: .qr <text-or-url>', msg); return; }
-        try {
-            const qrcodeMod = loadQrcode();
-            if (!qrcodeMod) { await safeWaReply(sock, remoteJid, '❌ QR generation unavailable on this host.', msg); return; }
-            const png = await qrcodeMod.toBuffer(data, { width: 512, margin: 1 });
-            await sock.sendMessage(remoteJid, { image: png, caption: `${GROUP_CHANNEL_LINK}\n\n*QR GENERATED*` }, { quoted: msg });
-        } catch (err) {
-            await safeWaReply(sock, remoteJid, `❌ Could not generate QR. Error: ${err?.message}`, msg);
-        }
-        return;
-    }
-
-    // .calc <expr> — calculator
-    if (token === '.calc') {
-        const expr = args.join(' ').trim();
-        if (!expr) { await safeWaReply(sock, remoteJid, '❌ use: .calc 5 + 3 * 2', msg); return; }
-        try {
-            // Safe-ish eval: allow only numbers and basic operators
-            const clean = expr.replace(/[^0-9+\-*/(). %^]/g, '');
-            const result = Function(`"use strict"; return (${clean});`)();
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *CALC_ENGINE* █▓▒░\n\n` +
-                `   ✦ *INPUT* :: ${expr}\n` +
-                `   ✦ *RESULT* :: ${result}\n\n` +
-                `   " Numbers bend to my\n     will. "`
-            ), msg);
-        } catch (err) {
-            await safeWaReply(sock, remoteJid, `❌ Invalid expression.`, msg);
-        }
-        return;
-    }
-
-    // .base64 enc|dec <text>
-    if (token === '.base64') {
-        const mode = args[0]?.toLowerCase();
-        const data = args.slice(1).join(' ');
-        if (!['enc','dec'].includes(mode) || !data) { await safeWaReply(sock, remoteJid, '❌ use: .base64 enc <text>  |  .base64 dec <base64>', msg); return; }
-        try {
-            const out = mode === 'enc' ? Buffer.from(data).toString('base64') : Buffer.from(data, 'base64').toString('utf8');
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *BASE64_ENGINE* █▓▒░\n\n` +
-                `   ✦ *MODE* :: ${mode.toUpperCase()}\n` +
-                `   ✦ *OUTPUT* :: ${out.slice(0,200)}\n\n` +
-                `   " Encoding is but\n     a veil. "`
-            ), msg);
-        } catch (err) {
-            await safeWaReply(sock, remoteJid, `❌ Could not ${mode}ode. Error: ${err?.message}`, msg);
-        }
-        return;
-    }
 
     if (isGameCommand(token)) {
         const handled = await handleGameCommand({ sock, phoneNumber, remoteJid, senderJid, token, args });
