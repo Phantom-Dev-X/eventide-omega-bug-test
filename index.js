@@ -71,6 +71,7 @@ import { createConfigManagementCommands } from './src/commands/system/config-man
 import { createPluginKeyCommands } from './src/commands/system/plugin-key.js';
 import { createDeploymentCommands } from './src/commands/system/deployment.js';
 import { createPersonaCommands } from './src/commands/system/persona.js';
+import { createSudoCommands } from './src/commands/system/sudo.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3390,6 +3391,15 @@ const commandRegistry = createCommandRegistry([
         log,
         logError
     }),
+    ...createSudoCommands({
+        safeWaReply,
+        isDevNumber,
+        loadBotConfig,
+        saveBotConfig,
+        getQuotedContext,
+        normalizeDigits,
+        normalizeJid: jidNormalizedUser
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5337,76 +5347,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             await safeWaReply(sock, remoteJid, menuText, msg);
         } catch (err) {
             logError('WA-CMD', `${phoneNumber}: Failed sending bug menu`, err);
-        }
-        return;
-    }
-
-    // ──────────────────────────────────────────────
-    // 🛡️ SUDO SYSTEM (.addsudo / .removesudo / .sudos)
-    // ──────────────────────────────────────────────
-    // Owner/dev only. Target a person by REPLYING to their message, or by
-    // number / @mention in the command args. Sudoes persist in
-    // bot_config.json (Supabase on Render / disk on panel) and can command
-    // the bot even in owner mode.
-    const sudoTarget = (msgArg) => {
-        const q = getQuotedContext(msg);
-        const qSender = q?.participant || q?.remoteJid || '';
-        if (qSender) return qSender;
-        const digits = normalizeDigits(msgArg || '');
-        if (digits.length >= 7) return digits;
-        // @mention: the display text is useless ("@Patrick") — the real JID
-        // rides in contextInfo.mentionedJid (same pattern as .warn/.kick).
-        const mentioned = Array.isArray(q?.mentionedJid) ? q.mentionedJid[0] : null;
-        return mentioned ? jidNormalizedUser(mentioned) : null;
-    };
-
-    if (token === '.addsudo' || token === '.delsudo' || token === '.removesudo' || token === '.sudos' || token === '.listsudos') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const cfg = loadBotConfig(phoneNumber);
-        cfg.sudos = Array.isArray(cfg.sudos) ? cfg.sudos.map(s => normalizeDigits(s)).filter(Boolean) : [];
-
-        if (token === '.sudos' || token === '.listsudos') {
-            await safeWaReply(sock, remoteJid,
-                `🛡 *SUDO LIST* 👑\n\n` +
-                (cfg.sudos.length
-                    ? cfg.sudos.map((s, i) => `   [${i + 1}] ${s}`).join('\n')
-                    : `   _no sudoes yet_`) +
-                `\n\n   add: .addsudo <reply|number|@mention>\n` +
-                `   del: .delsudo <reply|number|@mention>`, msg);
-            return;
-        }
-
-        const target = sudoTarget(args[0] || '');
-        if (!target) {
-            await safeWaReply(sock, remoteJid,
-                `🛡 *SUDO* 👑\n\n` +
-                `reply to their message, or send:\n` +
-                `.${token === '.addsudo' ? 'addsudo' : 'delsudo'} 234xxxxxxxxx\n` +
-                `.${token === '.addsudo' ? 'addsudo' : 'delsudo'} @mention`, msg);
-            return;
-        }
-        const digits = normalizeDigits(target);
-        if (!digits || digits.length < 7) {
-            await safeWaReply(sock, remoteJid, '❌ Could not resolve that target.', msg);
-            return;
-        }
-
-        if (token === '.addsudo') {
-            if (!cfg.sudos.includes(digits)) cfg.sudos.push(digits);
-            saveBotConfig(phoneNumber, cfg);
-            await safeWaReply(sock, remoteJid,
-                `🛡 *SUDO GRANTED* :: ${digits}\n\n` +
-                `they can now command the bot\n` +
-                `even in owner mode.\n\n` +
-                `   " the void obeys the chosen. "`, msg);
-        } else {
-            const before = cfg.sudos.length;
-            cfg.sudos = cfg.sudos.filter(s => s !== digits);
-            saveBotConfig(phoneNumber, cfg);
-            await safeWaReply(sock, remoteJid,
-                before === cfg.sudos.length
-                    ? `🛡 *SUDO* :: ${digits} wasn't in the list.`
-                    : `🛡 *SUDO REVOKED* :: ${digits}\n\n   their pass is void now.`, msg);
         }
         return;
     }
