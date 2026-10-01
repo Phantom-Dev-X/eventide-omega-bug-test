@@ -46,6 +46,33 @@ import {
 import { initWebApp } from './webApp.js';
 import { startLocalBackups, runLocalBackup } from './backup.js';
 import { parseInviteOrJid, listParticipatingGroups, resolveAndJoinTarget } from './wardConfig.js';
+import { createEnvironmentConfig } from './src/config/env.js';
+import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
+import { log, logError } from './src/core/logger.js';
+import {
+    telegramUsers,
+    waSessions,
+    reconnectAttempts,
+    connClosed428s,
+    sentPolls,
+    lastPollVotes,
+    menuReplyMessages,
+    helpModeUsers,
+    presenceControllers,
+    autoreactSessions,
+    personaPollKeys,
+    helpPersonaPollKeys,
+    webPairSessions,
+    mutedUsers,
+    recentMessages,
+    antiConfigSessions,
+    welcomeGoodbyeSessions,
+    warnConfigSessions,
+    msgLogCache,
+    msgLogSaveTimers,
+    tttGames,
+    tttSetupSessions
+} from './src/core/state.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,42 +83,23 @@ const TelegramBot = require('node-telegram-bot-api');
 // ──────────────────────────────────────────────
 // 📋 CONFIG
 // ──────────────────────────────────────────────
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const MAX_USERS = Math.max(1, parseInt(process.env.MAX_USERS || '10', 10) || 10);
-const DEV_IDS = (process.env.DEV_TELEGRAM_IDS || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(Number)
-    .filter(Number.isFinite);
-const PORT = parseInt(process.env.PORT || process.env.SERVER_PORT || '3000', 10) || 3000;
-const AUTH_DIR = path.join(__dirname, 'sessions');
-const USER_MAP_FILE = path.join(__dirname, 'user_map.json');
-const KEEP_ALIVE_INTERVAL = 4 * 60 * 1000;
-const RECENT_APPEND_WINDOW_SECONDS = 120;
-
-// This deployment is Render-only BY DEFAULT. A stale panel/Pterodactyl
-// checkout using the same WhatsApp credentials causes Baileys 440
-// (connectionReplaced) loops, so non-Render hosts must never open a socket —
-// unless the host explicitly opts in with PANEL_BOT_ENABLED=true. That var
-// lives only in a panel's own .env (git pulls never carry env), so the old
-// inaccessible panel stays passive while a deliberately configured one runs.
-const RENDER_ONLY_BUILD = true;
-const IS_RENDER_RUNTIME = ['1', 'true', 'yes'].includes(String(process.env.RENDER || '').trim().toLowerCase())
-    || !!process.env.RENDER_SERVICE_ID
-    || !!process.env.RENDER_INSTANCE_ID
-    || !!process.env.RENDER_EXTERNAL_URL;
-const PANEL_BOT_ENABLED = ['1', 'true', 'yes'].includes(String(process.env.PANEL_BOT_ENABLED || '').trim().toLowerCase());
-// Permanent kill switch for the inaccessible duplicate Render service. Any
-// future Render service has a different ID and remains allowed automatically.
-const BLOCKED_RENDER_SERVICE_IDS = new Set([
-    'srv-da3bgc0u01pc738bjg1g'
-]);
-const CURRENT_RENDER_SERVICE_ID = String(process.env.RENDER_SERVICE_ID || '').trim();
-const IS_BLOCKED_RENDER_SERVICE = IS_RENDER_RUNTIME
-    && BLOCKED_RENDER_SERVICE_IDS.has(CURRENT_RENDER_SERVICE_ID);
-const BOT_RUNTIME_ALLOWED = (!RENDER_ONLY_BUILD || IS_RENDER_RUNTIME || PANEL_BOT_ENABLED)
-    && !IS_BLOCKED_RENDER_SERVICE;
+const environmentConfig = createEnvironmentConfig({ rootDir: __dirname });
+const {
+    TELEGRAM_TOKEN,
+    MAX_USERS,
+    DEV_IDS,
+    PORT,
+    AUTH_DIR,
+    USER_MAP_FILE,
+    KEEP_ALIVE_INTERVAL,
+    RECENT_APPEND_WINDOW_SECONDS,
+    IS_RENDER_RUNTIME,
+    CURRENT_RENDER_SERVICE_ID,
+    IS_BLOCKED_RENDER_SERVICE,
+    BOT_RUNTIME_ALLOWED,
+    GROUP_CHANNEL_LINK,
+    VERBOSE_LOGS
+} = environmentConfig;
 
 // ──────────────────────────────────────────────
 // 🔮 HEADERS & STAGES (PERFECT WHATSAPP SPACING)
@@ -153,7 +161,6 @@ const STAGE2_TEXT = `.
 // Reads from the RENDER env var GROUP_CHANNEL_LINK (set it to your
 // WhatsApp channel link), with a fallback default if unset.
 // ──────────────────────────────────────────────
-const GROUP_CHANNEL_LINK = (process.env.GROUP_CHANNEL_LINK || 'https://whatsapp.com/channel/0029VbCrFiK17En02cax3r02').trim();
 
 // 🖼️ FULLY EMBEDDED channel link-preview. The channel metadata + thumbnail are
 // baked into the code, so the bot NEVER makes an HTTP request for previews —
@@ -166,7 +173,6 @@ const CHANNEL_PREVIEW_MATCHED = "https://whatsapp.com/channel/0029VbCrFiK17En02c
 // 📋 VERBOSE_LOGS=true turns on per-message tracing (upsert ids, parse trees,
 // send ids). Default OFF so Render logs stay readable — REACT, errors and
 // command-level logs always show.
-const VERBOSE_LOGS = ['1', 'true', 'on', 'yes'].includes(String(process.env.VERBOSE_LOGS || '').toLowerCase().trim());
 const CHANNEL_PREVIEW_THUMB_B64 = [
     "/9j/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBD",
     "ARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCADAAMAD",
@@ -558,28 +564,6 @@ const COMMANDS = {
 // ──────────────────────────────────────────────
 // 🔧 STATE
 // ──────────────────────────────────────────────
-const telegramUsers = new Map();
-const waSessions = new Map();
-const reconnectAttempts = new Map(); // Tracks reconnection retries per phone number (Max 3)
-const connClosed428s = new Map(); // phoneNumber -> { count, windowStart, lastNotifiedAt } for 428 connectionClosed tracking
-const sentPolls = new Map(); // Tracks sent poll creation messages in memory for decryption (ID -> message)
-const lastPollVotes = new Map(); // pollId:voterJid -> last voted option id (lets changed votes trigger a new reply)
-const menuReplyMessages = new Map(); // pollId:voterJid -> [message keys] sent for the current menu reply (deleted on vote change)
-const helpModeUsers = new Map(); // Tracks active AI Help Mode chats (JID -> timeoutTimer)
-const presenceControllers = new Map(); // phoneNumber -> { sock, backgroundState, cycleTimer, flashTimer }
-const autoreactSessions = new Map(); // phoneNumber -> { step, awaitingContact } for autoreact config flow
-const personaPollKeys = new Map(); // phoneNumber -> persona poll message key (deleted after the owner picks)
-const helpPersonaPollKeys = new Map(); // phoneNumber -> help-persona poll key (deleted after the pick)
-const webPairSessions = new Map(); // phoneNumber -> { code, status, createdAt } for web pairing
-const mutedUsers = new Map(); // `${phoneNumber}:${groupJid}` -> Set of muted member jids
-const recentMessages = new Map(); // `${phoneNumber}:${remoteJid}:${msgId}` -> message (for antidelete restore)
-const antiConfigSessions = new Map(); // phoneNumber -> { step, group } for anti config
-const welcomeGoodbyeSessions = new Map(); // phoneNumber -> { step, type } for welcome/goodbye config
-const warnConfigSessions = new Map(); // phoneNumber -> warn config poll flow
-const msgLogCache = new Map(); // phoneNumber -> slim log object (avoids reread/parse every msg)
-const msgLogSaveTimers = new Map();
-const tttGames = new Map(); // `${phoneNumber}:${chatJid}` -> live tic-tac-toe game
-const tttSetupSessions = new Map(); // phoneNumber -> { step, chat, host, poll keys }
 let cachedBaileysVersion = null;
 let cachedBaileysVersionAt = 0;
 
@@ -643,27 +627,7 @@ function saveBotMode(phoneNumber, mode) {
 // Per-phone config: prefix, aliases, identity, toggles. Stored as JSON in the
 // session folder so it survives redeploys (the folder is synced to Supabase).
 // ──────────────────────────────────────────────
-const DEFAULT_BOT_CONFIG = {
-    prefix: '.',
-    aliases: {},            // trigger (lowercase, no prefix) -> target command (with prefix)
-    name: '',               // display name override ('' = leave account name)
-    bio: '',                // about/bio override ('' = leave as is)
-    geminiApiKey: '',       // owner's personal Gemini key (.pluginkey) — this session's AI routes through it
-    persona: '',            // '' = UNBOUND (any command asks for the persona pick) · 'eclipse' | 'ruin' once chosen
-    helpPersona: '',        // '' = UNBOUND (first .help asks for the AI voice) · 'eclipse' | 'ruin' once chosen
-    sudos: [],              // digit numbers of elevated users — can command the bot even in owner mode
-    lastDeployNotifiedCommit: '', // last commit hash the owner got a "deploy complete" DM for
-    autoreact: {
-        enabled: false,
-        endpoints: { groups: [], channels: [], contacts: [] }
-    },
-    antidelete: {
-        enabled: false,
-        endpoints: { groups: [], channels: [], contacts: [] }
-    },
-    settings: {},           // generic future toggles
-    anti: { antilink: {}, antimention: {}, antiforward: {} }   // per-groupId -> 'on'/'off'
-};
+
 
 // Normalize antidelete to the same shape as autoreact. Also migrates the old
 // per-group { [jid]: 'on'/'off' } map (and legacy anti.antidelete) into endpoints.
@@ -2228,18 +2192,6 @@ function getStaticHelpAnswer(rawQuestion) {
 // ──────────────────────────────────────────────
 // 🧰 BASIC HELPERS
 // ──────────────────────────────────────────────
-function log(scope, message, extra) {
-    const prefix = `[${new Date().toISOString()}] [${scope}]`;
-    if (typeof extra === 'undefined') console.log(`${prefix} ${message}`);
-    else console.log(`${prefix} ${message}`, extra);
-}
-
-function logError(scope, message, err) {
-    const prefix = `[${new Date().toISOString()}] [${scope}]`;
-    console.error(`${prefix} ${message}: ${err?.message || err}`);
-    if (err?.stack) console.error(err.stack);
-}
-
 function ensureDir(dirPath) {
     if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
