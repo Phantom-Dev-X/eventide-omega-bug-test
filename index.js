@@ -66,6 +66,7 @@ import { createOwnerOperationCommands } from './src/commands/system/owner-operat
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createConfigurationCommands } from './src/commands/system/configuration.js';
 import { createAccessModeCommands } from './src/commands/system/access-mode.js';
+import { createCustomizationCommands } from './src/commands/system/customization.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3327,6 +3328,12 @@ const commandRegistry = createCommandRegistry([
         saveBotMode,
         terminalHeader: TERMINAL_HEADER
     }),
+    ...createCustomizationCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        saveBotConfig
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5588,122 +5595,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ⚙️ CONFIG COMMANDS (change the bot / host account)
     // ──────────────────────────────────────────────
 
-    // .setprefix <char> — change the bot command prefix (persists)
-    if (token === '.setprefix' || token === '.changeprefix') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const p = args[0];
-        if (!p || p.length > 2) {
-            await safeWaReply(sock, remoteJid, '❌ Provide a 1-character prefix.\n\nuse: .setprefix !   (or .setprefix . to reset)', msg);
-            return;
-        }
-        botConfig.prefix = p;
-        saveBotConfig(phoneNumber, botConfig);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *PREFIX_CALIBRATION* █▓▒░\n\n` +
-            `   ✦ *OLD* :: ${prefix}\n` +
-            `   ✦ *NEW* :: "${p}"\n` +
-            `   🔄 *APPLIED* :: IMMEDIATELY\n\n` +
-            `   " The sigil is rewritten.\n     Command now bends to\n     your tongue. "`
-        ), msg);
-        return;
-    }
-
-    // .setalias <trigger> <cmd> — bind an alias to run another command
-    if (token === '.setalias') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const trigger = (args[0] || '').replace(/^\./, '').toLowerCase();
-        const target = (args[1] || '').toLowerCase();
-        if (!trigger || !target.startsWith('.')) {
-            await safeWaReply(sock, remoteJid, '❌ use: .setalias <trigger> <command>\n\nExample: .setalias p .ping', msg);
-            return;
-        }
-        botConfig.aliases = botConfig.aliases || {};
-        botConfig.aliases[trigger] = target;
-        saveBotConfig(phoneNumber, botConfig);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *ALIAS_FORGED* █▓▒░\n\n` +
-            `   ✦ *TRIGGER* :: ${prefix}${trigger}\n` +
-            `   ✦ *CASTS* :: ${target}\n\n` +
-            `   " A new name is bound.\n     Speak it and the void\n     answers. "`
-        ), msg);
-        return;
-    }
-
-    // .delalias <trigger> — remove an alias
-    if (token === '.delalias') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const trigger = (args[0] || '').replace(/^\./, '').toLowerCase();
-        if (!trigger || !(botConfig.aliases || {})[trigger]) {
-            await safeWaReply(sock, remoteJid, `❌ No alias named "${trigger}". Use .aliases to see them.`, msg);
-            return;
-        }
-        delete botConfig.aliases[trigger];
-        saveBotConfig(phoneNumber, botConfig);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *ALIAS_SEVERED* █▓▒░\n\n` +
-            `   ✦ *TRIGGER* :: ${prefix}${trigger}\n` +
-            `   ✦ *STATUS* :: UNBOUND\n\n` +
-            `   " The name returns to\n     the silence. "`
-        ), msg);
-        return;
-    }
-
-    // .aliases — list all aliases
-    if (token === '.aliases') {
-        const aliases = botConfig.aliases || {};
-        const keys = Object.keys(aliases);
-        const list = keys.length ? keys.map(k => `   • ${prefix}${k}  →  ${aliases[k]}`).join('\n') : '   • _none bound_';
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *ALIAS_REGISTRY* █▓▒░\n\n` +
-            `   🔢 *COUNT* :: ${keys.length}\n\n` +
-            `${list}\n\n` +
-            `   " Names are power.\n     Guard them well. "`
-        ), msg);
-        return;
-    }
-
-    // .setname <name> — change the host account's display name
-    if (token === '.setname') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const name = args.join(' ').trim();
-        if (!name) { await safeWaReply(sock, remoteJid, '❌ use: .setname <name>', msg); return; }
-        try {
-            await sock.updateProfileName(name);
-            botConfig.name = name;
-            saveBotConfig(phoneNumber, botConfig);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *IDENTITY_ALIGNED* █▓▒░\n\n` +
-                `   ✦ *NAME* :: ${name}\n` +
-                `   ✦ *STATUS* :: ACCOUNT_RENAMED\n\n` +
-                `   " The vessel wears a\n     new name in the void. "`
-            ), msg);
-        } catch (e) {
-            await safeWaReply(sock, remoteJid, `❌ Could not set name. Error: ${e?.message}`, msg);
-        }
-        return;
-    }
-
-    // .setbio <text> — change the host account's about/bio
-    if (token === '.setbio' || token === '.setstatus') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const bio = args.join(' ').trim();
-        if (!bio) { await safeWaReply(sock, remoteJid, '❌ use: .setbio <text>', msg); return; }
-        try {
-            await sock.updateProfileStatus(bio);
-            botConfig.bio = bio;
-            saveBotConfig(phoneNumber, botConfig);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *BIO_INSCRIBED* █▓▒░\n\n` +
-                `   ✦ *ABOUT* :: ${bio}\n` +
-                `   ✦ *STATUS* :: ACCOUNT_UPDATED\n\n` +
-                `   " The void now reads\n     what you will it to say. "`
-            ), msg);
-        } catch (e) {
-            await safeWaReply(sock, remoteJid, `❌ Could not set bio. Error: ${e?.message}`, msg);
-        }
-        return;
-    }
-
     // .setpp — reply to an image to set the host account's profile pic
     if (token === '.setpp') {
         if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
@@ -5895,6 +5786,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         senderJid,
         isSenderOwner,
         args,
+        prefix,
         botConfig
     })) return;
 
