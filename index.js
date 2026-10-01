@@ -57,6 +57,8 @@ import { createMessageMiddleware } from './src/whatsapp/message-middleware.js';
 import { createMessageAccessService } from './src/whatsapp/message-access.js';
 import { createMessageConversationService } from './src/whatsapp/message-conversation.js';
 import { createMessageConfigInputService } from './src/whatsapp/message-config-input.js';
+import { createCommandRegistry } from './src/commands/registry.js';
+import { createBasicSystemCommands } from './src/commands/system/basic.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3247,6 +3249,12 @@ const messageConfigInputService = createMessageConfigInputService({
     buildOmegaTerminal
 });
 
+const commandRegistry = createCommandRegistry(createBasicSystemCommands({
+    safeWaReply,
+    buildOmegaTerminal,
+    runtimeUptime
+}));
+
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
 // ──────────────────────────────────────────────
@@ -6410,35 +6418,18 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     }
 
     // ──────────────────────────────────────────────
-    // 🖥️ SYSTEM COMMANDS (replies match phantom-x)
+    // 🖥️ SYSTEM COMMANDS
     // ──────────────────────────────────────────────
-
-    // .ping — signal check
-    if (token === '.ping') {
-        const start = Date.now();
-        try {
-            await sock.sendMessage(remoteJid, { text: "⚡ _scanning signal..._" }, { quoted: msg });
-        } catch (_) {}
-        const latency = Date.now() - start;
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `            — *S I G N A L* —\n\n` +
-            `   ⚡ *LATENCY* ──╼  [ ${latency}ms ]\n` +
-            `   📡 *RESONANCE* ──╼  [ ${latency < 300 ? "STABLE" : latency < 800 ? "MODERATE" : "DEGRADED"} ]\n` +
-            `   ⏱️ *UPTIME* ──╼  [ ${runtimeUptime()} ]\n\n` +
-            `   " *An echo in the void is*\n     *the only proof you exist* ."`
-        ), msg);
-        return;
-    }
-
-
-
-
-
-
-
-       // .ping — signal check
-    
-
+    if (await commandRegistry.execute(token, {
+        sock,
+        remoteJid,
+        message: msg,
+        phoneNumber,
+        senderJid,
+        isSenderOwner,
+        args,
+        botConfig
+    })) return;
 
     // 🧪 TEMPORARY .crash-hard / .frz-oom — sandbox payloads (owner/dev only;
     // delete with the other test commands when antibug testing ends).
@@ -6665,86 +6656,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
 
     
-
-    // .uptime — temporal logs
-    if (token === '.uptime') {
-        const mu = process.memoryUsage();
-        const heapU = (mu.heapUsed / 1024 / 1024).toFixed(0);
-        const heapT = (mu.heapTotal / 1024 / 1024).toFixed(0);
-        const rss   = (mu.rss / 1024 / 1024).toFixed(0);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ┌── *TEMPORAL LOGS* ──┐\n` +
-            `   ╿\n` +
-            `   ┝  *ACTIVE* : ${runtimeUptime()}\n` +
-            `   ┝  *HEAP* : ${heapU}MB / ${heapT}MB\n` +
-            `   ┝  *RSS* : ${rss}MB\n` +
-            `   ┝  *PID* : ${process.pid}\n` +
-            `   ╿\n` +
-            `   └── *STABILITY: OPERATIONAL* ──┘\n\n` +
-            `   " *I have survived the collapse.*\n     *My pulse keeps this realm*\n     *from drifting into the void.* "`
-        ), msg);
-        return;
-    }
-
-    // .info — core manifest
-    if (token === '.info') {
-        const mu = process.memoryUsage();
-        const heapUsed = (mu.heapUsed / 1024 / 1024).toFixed(0);
-        const heapTotal = (mu.heapTotal / 1024 / 1024).toFixed(0);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_MANIFEST* █▓▒░\n\n` +
-            `   ⧓ *VERSION* :: v1.0.0_STABLE\n` +
-            `   ⧓ *RUNTIME* :: NODE_JS v${process.version.slice(1)}\n` +
-            `   ⧓ *UPTIME* :: ${runtimeUptime()}\n` +
-            `   ⧓ *MEMORY* :: ${heapUsed}MB / ${heapTotal}MB\n` +
-            `   ⧓ *SHIELD* :: BUG_SHIELD: ACTIVE\n\n` +
-            `   " *The machine does not sleep* .\n     *The machine only waits* ."`
-        ), msg);
-        return;
-    }
-
-    // .runtime — process vitals
-    if (token === '.runtime') {
-        const mu = process.memoryUsage();
-        const heapUsed = (mu.heapUsed / 1024 / 1024).toFixed(0);
-        const rss = (mu.rss / 1024 / 1024).toFixed(0);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *RUNTIME_MANIFEST* █▓▒░\n\n` +
-            `   ⏱️ *UPTIME* :: ${runtimeUptime()}\n` +
-            `   🧠 *NODE* :: v${process.version.slice(1)}\n` +
-            `   💾 *HEAP* :: ${heapUsed}MB\n` +
-            `   📦 *RSS* :: ${rss}MB\n` +
-            `   ⚙️ *PID* :: ${process.pid}\n\n` +
-            `   " *Every second awake is*\n     *a second the void fails.* "`
-        ), msg);
-        return;
-    }
-
-    // .version — bot version
-    if (token === '.version') {
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_VERSION* █▓▒░\n\n` +
-            `   ⧓ *BUILD* :: v1.0.0_STABLE\n` +
-            `   ⧓ *ENGINE* :: NODE_JS v${process.version.slice(1)}\n` +
-            `   ⧓ *CORE* :: EVENTIDE OMEGA\n\n` +
-            `   " *I do not change.*\n     *I only sharpen.* "`
-        ), msg);
-        return;
-    }
-
-    // .os — host machine info
-    if (token === '.os') {
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *HOST_OS* █▓▒░\n\n` +
-            `   🖥️ *PLATFORM* :: ${process.platform}\n` +
-            `   🏗️ *ARCH* :: ${process.arch}\n` +
-            `   ⏱️ *UPTIME* :: ${runtimeUptime()}\n` +
-            `   📦 *NODE* :: v${process.version.slice(1)}\n` +
-            `   ⚙️ *PID* :: ${process.pid}\n\n` +
-            `   " *This vessel is but a*\n     *shell for a greater will.* "`
-        ), msg);
-        return;
-    }
 
     // .status — overall bot state + owner-only deployment identity.
     // The Render details make it possible to identify which duplicate service
