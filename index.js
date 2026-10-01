@@ -67,6 +67,7 @@ import { createUtilitySystemCommands } from './src/commands/system/utilities.js'
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
+import { createGroupProtectionCommands } from './src/commands/group/protections.js';
 import { createGroupWarningCommands } from './src/commands/group/warnings.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
@@ -3343,6 +3344,19 @@ const commandRegistry = createCommandRegistry([
         log,
         logError
     }),
+    ...createGroupProtectionCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        resolveAndJoinTarget,
+        isParticipantAdmin,
+        isDevNumber,
+        saveBotConfig,
+        getAntideleteState,
+        saveAntideleteState,
+        autoreactSessions,
+        antiConfigSessions,
+        sendMenuPoll
+    }),
     ...createGroupWarningCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5923,99 +5937,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 👥 GROUP COMMANDS
     // ──────────────────────────────────────────────
-
-    // 🛡️ ANTI COMMANDS — toggle group protections (admin gated)
-    const handleAntiToggle = async (which, val, extraRaw = '') => {
-        if (val !== 'on' && val !== 'off') {
-            await safeWaReply(sock, remoteJid, `❌ use: .${which} on | .${which} off\n   or .${which} on <group invite/id>`, msg);
-            return;
-        }
-        let target = remoteJid;
-        let targetName = remoteJid;
-        const extra = String(extraRaw || '').trim();
-        if (extra) {
-            const got = await resolveAndJoinTarget(sock, extra);
-            if (!got.ok) { await safeWaReply(sock, remoteJid, `❌ ${got.error}`, msg); return; }
-            if (got.kind !== 'group') { await safeWaReply(sock, remoteJid, '❌ That ward only applies to groups. Send a group invite.', msg); return; }
-            target = got.jid;
-            targetName = got.name || got.jid;
-        } else if (!remoteJid.endsWith('@g.us')) {
-            await safeWaReply(sock, remoteJid, `❌ Use this inside a group, or: .${which} on <invite link>`, msg);
-            return;
-        }
-        if (target.endsWith('@g.us')) {
-            try {
-                const meta = await sock.groupMetadata(target);
-                targetName = meta.subject || targetName;
-                const isSenderAdmin = isParticipantAdmin(meta, senderJid);
-                if (!isSenderAdmin && !isSenderOwner && !isDevNumber(senderJid)) {
-                    await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg);
-                    return;
-                }
-            } catch (_) {}
-        }
-        botConfig.anti = botConfig.anti || {};
-        botConfig.anti[which] = botConfig.anti[which] || {};
-        botConfig.anti[which][target] = val;
-        saveBotConfig(phoneNumber, botConfig);
-        const label = which === 'antilink' ? 'LINK_WARD' : which === 'antimention' ? 'MENTION_WARD' : which === 'antiforward' ? 'FORWARD_WARD' : 'DELETE_WARD';
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *${label}* █▓▒░\n\n` +
-            `   ✦ *STATE* :: ${val === 'on' ? 'ACTIVE' : 'OFF'}\n` +
-            `   ✦ *GROUP* :: ${targetName}\n\n` +
-            `   " The ward ${val === 'on' ? 'rises' : 'falls'}. "`
-        ), msg);
-    };
-
-    if (token === '.antilink') { await handleAntiToggle('antilink', args[0]?.toLowerCase(), args.slice(1).join(' ')); return; }
-    if (token === '.antimention') { await handleAntiToggle('antimention', args[0]?.toLowerCase(), args.slice(1).join(' ')); return; }
-    if (token === '.antiforward') { await handleAntiToggle('antiforward', args[0]?.toLowerCase(), args.slice(1).join(' ')); return; }
-
-    // .antidelete on|off — global toggle (same shape as .autoreact)
-    if (token === '.antidelete') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const ad = getAntideleteState(phoneNumber);
-        const val = args[0]?.toLowerCase();
-        if (val !== 'on' && val !== 'off') {
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *ANTIDELETE* █▓▒░\n\n` +
-                `   ✦ *STATE* :: ${ad.enabled ? 'ON' : 'OFF'}\n` +
-                `   ✦ *GROUPS* :: ${(ad.endpoints?.groups || []).length}\n` +
-                `   ✦ *CHANNELS* :: ${(ad.endpoints?.channels || []).length}\n` +
-                `   ✦ *CONTACTS* :: ${(ad.endpoints?.contacts || []).length}\n\n` +
-                `   use: .antidelete on | .antidelete off\n\n` +
-                `   " Configure who is watched\n     via .antideleteconfig "`
-            ), msg);
-            return;
-        }
-        ad.enabled = val === 'on';
-        saveAntideleteState(phoneNumber, ad);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *DELETE_WARD* █▓▒░\n\n` +
-            `   ✦ *STATE* :: ${val === 'on' ? 'ON' : 'OFF'}\n` +
-            `   ✦ *ACTION* :: ${val === 'on' ? 'WATCH_ENABLED' : 'WATCH_DISABLED'}\n\n` +
-            `   " Deleted messages will be\n     forwarded to the owner DM. "`
-        ), msg);
-        return;
-    }
-
-    // .antideleteconfig — same poll flow as .autoreactconfig (add / delete endpoints)
-    if (token === '.antideleteconfig' || token === '.antideletecfg') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const ad = getAntideleteState(phoneNumber);
-        autoreactSessions.delete(phoneNumber);
-        antiConfigSessions.set(phoneNumber, { step: 'add_or_delete' });
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *ANTIDELETE_CONFIG_MATRIX* █▓▒░\n\n` +
-            `   ✦ *STATE* :: ${ad.enabled ? 'ON' : 'OFF'}\n` +
-            `   ✦ *GROUPS* :: ${(ad.endpoints?.groups || []).length}\n` +
-            `   ✦ *CHANNELS* :: ${(ad.endpoints?.channels || []).length}\n` +
-            `   ✦ *CONTACTS* :: ${(ad.endpoints?.contacts || []).length}\n\n` +
-            `   Choose what to do below.`
-        ), msg);
-        await sendMenuPoll(sock, remoteJid, phoneNumber, '✦ ANTIDELETE MATRIX ✦', ['➕ Add Endpoint', '🗑️ Delete Endpoint'], ['ad_add', 'ad_delete']);
-        return;
-    }
 
     // .welcome / .goodbye / .greet — OWNER ONLY: choose Welcome or Goodbye, then enter message
     if (token === '.welcome' || token === '.goodbye' || token === '.greet') {

@@ -30,6 +30,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/group/membership.js` — group joining, member changes, invite links, and administrator rank changes
 - `src/commands/group/information.js` — group details, visible and hidden broadcasts, and contact-card exports
 - `src/commands/group/moderation.js` — per-member muting and whole-group lock/unlock controls
+- `src/commands/group/protections.js` — anti-link/mention/forward toggles and antidelete configuration
 - `src/commands/group/warnings.js` — warning mutations, ledgers, authorization, and warning-menu initialization
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
