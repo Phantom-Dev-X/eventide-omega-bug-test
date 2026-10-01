@@ -18,6 +18,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/whatsapp/message-pipeline.js` — transport preflight, echo filtering, revoke routing, and command-token parsing
 - `src/whatsapp/message-middleware.js` — caching, moderation, command acknowledgement, and endpoint auto-reactions
 - `src/whatsapp/message-access.js` — persona, privacy-mode, warning, game, and hidetag gates
+- `src/whatsapp/message-conversation.js` — ward target input and stateful AI help-mode conversations
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests

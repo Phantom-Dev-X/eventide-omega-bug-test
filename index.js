@@ -55,6 +55,7 @@ import { createMessageEventService } from './src/whatsapp/message-events.js';
 import { createMessagePipeline, parseCommandInput } from './src/whatsapp/message-pipeline.js';
 import { createMessageMiddleware } from './src/whatsapp/message-middleware.js';
 import { createMessageAccessService } from './src/whatsapp/message-access.js';
+import { createMessageConversationService } from './src/whatsapp/message-conversation.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3212,6 +3213,23 @@ const messageAccessService = createMessageAccessService({
     logError
 });
 
+const messageConversationService = createMessageConversationService({
+    autoreactSessions,
+    antiConfigSessions,
+    helpModeUsers,
+    parseInviteOrJid,
+    resolveAndJoinTarget,
+    applyWardEndpoint,
+    safeWaReply,
+    buildOmegaTerminal,
+    terminalHeader: TERMINAL_HEADER,
+    getBoundHelpPrompt,
+    callUniversalAI,
+    aiOptsFor,
+    log,
+    logError
+});
+
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
 // ──────────────────────────────────────────────
@@ -5031,91 +5049,19 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
     const { currentMode, senderJid, isSenderOwner } = accessContext;
 
-    // Paste link / ID while a ward poll is waiting (quote the poll or just send).
-    {
-        const arS = autoreactSessions.get(phoneNumber);
-        const adS = antiConfigSessions.get(phoneNumber);
-        const pending = (arS?.step === 'awaiting_ref' || arS?.step === 'pick_group') ? { ward: 'ar', sess: arS }
-            : (adS?.step === 'awaiting_ref' || adS?.step === 'pick_group') ? { ward: 'ad', sess: adS }
-            : null;
-        const looksLikeTarget = !!(parseInviteOrJid(text) || parseInviteOrJid(normalized));
-        if (pending && (pending.sess.step === 'awaiting_ref' || looksLikeTarget)) {
-            if (['.cancel', 'cancel'].includes(String(text).toLowerCase().trim()) || token === '.cancel') {
-                if (pending.ward === 'ar') autoreactSessions.delete(phoneNumber);
-                else antiConfigSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(`   ✦ *CANCELLED* :: no changes made.`), msg);
-                return;
-            }
-            if (looksLikeTarget) {
-                const got = await resolveAndJoinTarget(sock, text);
-                if (!got.ok) {
-                    await safeWaReply(sock, remoteJid, `❌ ${got.error}`, msg);
-                    return;
-                }
-                const want = pending.sess.endpoint || got.kind;
-                if (want === 'channel' && got.kind !== 'channel') {
-                    await safeWaReply(sock, remoteJid, '❌ That is not a channel link/ID.', msg);
-                    return;
-                }
-                if (want === 'group' && got.kind !== 'group') {
-                    await safeWaReply(sock, remoteJid, '❌ That is not a group invite/ID.', msg);
-                    return;
-                }
-                applyWardEndpoint(phoneNumber, pending.ward, got.kind, got.jid);
-                if (pending.ward === 'ar') autoreactSessions.delete(phoneNumber);
-                else antiConfigSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                    `   ░▒▓█ *ENDPOINT_ADDED* █▓▒░\n\n` +
-                    `   ✦ *TYPE* :: ${got.kind.toUpperCase()}\n` +
-                    `   ✦ *TARGET* :: ${got.name || got.jid}\n` +
-                    `   ✦ *JOINED* :: ${got.joined ? 'YES' : 'ALREADY_IN'}\n\n` +
-                    (pending.ward === 'ad'
-                        ? `   Arm with *.antidelete on* if needed.`
-                        : `   Arm with *.autoreact on* if needed.`)
-                ), msg);
-                return;
-            }
-        }
-    }
-
-    // Help mode: only .help can leave. Other cmds (.ping etc) are treated as questions.
-    if (helpModeUsers.has(remoteJid) && token !== '.help') {
-        // 🛡️ ANTI-LOOP: Baileys re-emits the bot's OWN sent messages as
-        // 'append' upserts (emitOwnEvents: true). Skip those echoes plus any
-        // text that starts with a bot reply signature. Live messages from the
-        // owner's linked phone arrive as 'notify' and are still answered.
-        if (
-            (fromMe && eventType === 'append') ||
-            text.startsWith('🤖') ||
-            text.startsWith('╔') ||
-            text.startsWith('✅') ||
-            text.startsWith('📌') ||
-            text.startsWith('⚠️') ||
-            text.startsWith('eventide omega connected')
-        ) {
-            log('LOOP-PREVENTION', `${phoneNumber}: skipped help-mode self-echo | type=${eventType} fromMe=${fromMe} id=${msgId} jid=${remoteJid}`);
-            return;
-        }
-        const stateObj = helpModeUsers.get(remoteJid);
-        if (stateObj?.timer) clearTimeout(stateObj.timer);
-        const newTimer = setTimeout(async () => {
-            helpModeUsers.delete(remoteJid);
-            try {
-                await sock.sendMessage(remoteJid, {
-                    text: TERMINAL_HEADER + `╔═════ HELP_MODE ═════╗\n\n   ⏳  Help mode timed out after 10 min inactivity.\n   Type *.help* again to re-enable.`
-                });
-            } catch {}
-        }, 10 * 60 * 1000);
-        helpModeUsers.set(remoteJid, { timer: newTimer });
-        try {
-            const aiReply = await callUniversalAI(text, getBoundHelpPrompt(phoneNumber), aiOptsFor(phoneNumber));
-            await safeWaReply(sock, remoteJid, `🤖 *Eventide Help:*\n\n${aiReply}`, msg);
-        } catch (err) {
-            logError('HELP-MODE', 'AI Help reply failed', err);
-            await safeWaReply(sock, remoteJid, '❌ Help AI is offline right now. Type *.help* to exit help mode.', msg);
-        }
-        return;
-    }
+    const conversationHandled = await messageConversationService.handleConversation({
+        sock,
+        message: msg,
+        phoneNumber,
+        eventType,
+        remoteJid,
+        messageId: msgId,
+        fromMe,
+        text,
+        normalized,
+        token
+    });
+    if (conversationHandled) return;
 
     // AI Help mode interceptor (runs on normal text without dots)
     if (!startsWithDot) {
