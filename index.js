@@ -61,6 +61,7 @@ import { createCommandRegistry } from './src/commands/registry.js';
 import { createBasicSystemCommands } from './src/commands/system/basic.js';
 import { createSessionSystemCommands } from './src/commands/system/session.js';
 import { createAccountSystemCommands } from './src/commands/system/account.js';
+import { createAccountToolCommands } from './src/commands/system/account-tools.js';
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createSessionStore } from './src/services/session-store.js';
@@ -3299,6 +3300,17 @@ const commandRegistry = createCommandRegistry([
         downloadMediaMessage,
         createSilentLogger: () => pino({ level: 'silent' }),
         groupChannelLink: GROUP_CHANNEL_LINK,
+        logError
+    }),
+    ...createAccountToolCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        normalizeJid: jidNormalizedUser,
+        fetchBuffer,
+        groupChannelLink: GROUP_CHANNEL_LINK,
+        downloadQuotedMedia,
+        resolveTargetJid,
+        isDevNumber,
         logError
     })
 ]);
@@ -6817,63 +6829,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    // .gpp / .getpp / .pfp — get a person's profile picture
-    if (token === '.gpp' || token === '.getpp' || token === '.pfp') {
-        let ppTarget = null;
-        const quotedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
-        if (quotedParticipant) ppTarget = jidNormalizedUser(quotedParticipant);
-        else {
-            const mentionedJid = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
-            if (mentionedJid) ppTarget = jidNormalizedUser(mentionedJid);
-        }
-        if (!ppTarget && args[0]) {
-            const digits = args[0].replace(/\D/g, "");
-            if (digits.length >= 7) ppTarget = `${digits}@s.whatsapp.net`;
-        }
-        if (!ppTarget) ppTarget = jidNormalizedUser(senderJid);
-        try {
-            const ppUrl = await sock.profilePictureUrl(ppTarget, "image");
-            const ppBuf = await fetchBuffer(ppUrl);
-            const ppNum = ppTarget.split("@")[0];
-            const caption = `${GROUP_CHANNEL_LINK}\n\n` + buildOmegaTerminal(
-                `   ░▒▓█ *VISUAL_EXTRACT* █▓▒░\n\n` +
-                `   [ 👁️ ] *TARGET* : +${ppNum}\n` +
-                `   [ 📸 ] *ACTION* : PROFILE_PIC_PULL\n` +
-                `   [ ✅ ] *RESULT* : ACQUIRED\n\n` +
-                `   " *No face is hidden*\n     *from the all-seeing eye.* "`
-            );
-            await sock.sendMessage(remoteJid, { image: ppBuf, caption }, { quoted: msg });
-        } catch (e) {
-            await safeWaReply(sock, remoteJid, `❌ Could not fetch profile picture. They may have privacy settings on, or the number is invalid.\n\nError: ${e?.message}`, msg);
-        }
-        return;
-    }
-
-    // .ggpp / .grouppic — get a group's profile picture
-    if (token === '.ggpp' || token === '.grouppic') {
-        if (!remoteJid.endsWith('@g.us')) {
-            await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg);
-            return;
-        }
-        try {
-            const gpUrl = await sock.profilePictureUrl(remoteJid, "image");
-            const gpBuf = await fetchBuffer(gpUrl);
-            let gpName = remoteJid;
-            try { const gpMeta = await sock.groupMetadata(remoteJid); gpName = gpMeta.subject; } catch (_) {}
-            const caption = `${GROUP_CHANNEL_LINK}\n\n` + buildOmegaTerminal(
-                `   ░▒▓█ *GROUP_VISUAL_EXTRACT* █▓▒░\n\n` +
-                `   [ 👁️ ] *GROUP* : ${gpName}\n` +
-                `   [ 📸 ] *ACTION* : GROUP_PIC_PULL\n` +
-                `   [ ✅ ] *RESULT* : ACQUIRED\n\n` +
-                `   " *Every domain has a face.*\n     *This one belongs to us.* "`
-            );
-            await sock.sendMessage(remoteJid, { image: gpBuf, caption }, { quoted: msg });
-        } catch (e) {
-            await safeWaReply(sock, remoteJid, `❌ Could not fetch group picture. The group may not have one set.\n\nError: ${e?.message}`, msg);
-        }
-        return;
-    }
-
     // ──────────────────────────────────────────────
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
     // ──────────────────────────────────────────────
@@ -7057,70 +7012,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         } catch (err) {
             logError('FUN', `${funToken} failed`, err);
             await safeWaReply(sock, remoteJid, `❌ The void refused to cook.\n${err?.message || err}\n\nSet GEMINI_API_KEY on Render if this keeps happening.`, msg);
-        }
-        return;
-    }
-
-    // .vv — unlock a view-once. Reply to the view-once (photo/video/voice).
-    if (token === '.vv' || token === '.viewonce') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        try {
-            const got = await downloadQuotedMedia(sock, msg);
-            if (!got.isViewOnce) {
-                await safeWaReply(sock, remoteJid, '❌ That is not a view-once. Reply to a *view-once* photo/video/voice with .vv', msg);
-                return;
-            }
-            const content = {};
-            if (got.type === 'imageMessage') { content.image = got.buffer; content.caption = got.node?.caption || ''; }
-            else if (got.type === 'videoMessage') { content.video = got.buffer; content.caption = got.node?.caption || ''; }
-            else if (got.type === 'audioMessage') { content.audio = got.buffer; content.ptt = !!got.node?.ptt; content.mimetype = got.node?.mimetype || 'audio/mp4'; }
-            else if (got.type === 'stickerMessage') { content.sticker = got.buffer; }
-            else { content.document = got.buffer; content.mimetype = got.node?.mimetype || 'application/octet-stream'; content.fileName = got.node?.fileName || 'viewonce'; }
-            await sock.sendMessage(remoteJid, content, { quoted: msg });
-        } catch (err) {
-            logError('VV', 'viewonce failed', err);
-            await safeWaReply(sock, remoteJid, `❌ Could not unlock that view-once.\n${err?.message || err}`, msg);
-        }
-        return;
-    }
-
-    // .block <number> — block on host account
-    // .block — reply to/mention/provide a number to block that contact
-    if (token === '.block') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply to a message, @mention, or provide a number.\nExample: .block @user  |  .block 23480...', msg); return; }
-        const num = target.split('@')[0];
-        try {
-            await sock.updateBlockStatus(target, 'block');
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *BLOCK_CAST* █▓▒░\n\n` +
-                `   ✦ *TARGET* :: +${num}\n` +
-                `   ✦ *STATE* :: BLOCKED\n\n` +
-                `   " They are cast from\n     the inner circle. "`
-            ), msg);
-        } catch (err) {
-            await safeWaReply(sock, remoteJid, `❌ Could not block. Error: ${err?.message}`, msg);
-        }
-        return;
-    }
-
-    // .unblock <number>
-    if (token === '.unblock') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply to a message, @mention, or provide a number.\nExample: .unblock @user  |  .unblock 23480...', msg); return; }
-        const num = target.split('@')[0];
-        try {
-            await sock.updateBlockStatus(`${num}@s.whatsapp.net`, 'unblock');
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *BLOCK_LIFTED* █▓▒░\n\n` +
-                `   ✦ *TARGET* :: ${num}\n` +
-                `   ✦ *STATE* :: UNBLOCKED\n\n` +
-                `   " They may return\n     to the circle. "`
-            ), msg);
-        } catch (err) {
-            await safeWaReply(sock, remoteJid, `❌ Could not unblock. Error: ${err?.message}`, msg);
         }
         return;
     }

@@ -24,6 +24,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/basic.js` — low-risk runtime and host information commands
 - `src/commands/system/session.js` — health, deployment, and session visibility commands
 - `src/commands/system/account.js` — developer contact, group listing, and account profile commands
+- `src/commands/system/account-tools.js` — profile-picture retrieval, view-once recovery, and privileged contact controls
 - `src/commands/system/owner-operations.js` — privileged backup, process control, reconnect, and logout operations with injected side-effect boundaries
 - `src/commands/system/utilities.js` — sticker/image conversion, QR generation, calculator, and Base64 utilities
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
