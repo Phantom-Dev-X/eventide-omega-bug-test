@@ -21,7 +21,8 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/whatsapp/message-conversation.js` — ward target input and stateful AI help-mode conversations
 - `src/whatsapp/message-config-input.js` — autoreact, antidelete, warning, and welcome configuration text input
 - `src/commands/registry.js` — command registration, alias lookup, and dispatch
-- `src/commands/system/basic.js` — low-risk system information commands
+- `src/commands/system/basic.js` — low-risk runtime and host information commands
+- `src/commands/system/session.js` — health, deployment, and session visibility commands
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests

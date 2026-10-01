@@ -59,6 +59,7 @@ import { createMessageConversationService } from './src/whatsapp/message-convers
 import { createMessageConfigInputService } from './src/whatsapp/message-config-input.js';
 import { createCommandRegistry } from './src/commands/registry.js';
 import { createBasicSystemCommands } from './src/commands/system/basic.js';
+import { createSessionSystemCommands } from './src/commands/system/session.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3249,11 +3250,23 @@ const messageConfigInputService = createMessageConfigInputService({
     buildOmegaTerminal
 });
 
-const commandRegistry = createCommandRegistry(createBasicSystemCommands({
-    safeWaReply,
-    buildOmegaTerminal,
-    runtimeUptime
-}));
+const commandRegistry = createCommandRegistry([
+    ...createBasicSystemCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        runtimeUptime
+    }),
+    ...createSessionSystemCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        runtimeUptime,
+        loadBotMode,
+        waSessions,
+        isDevNumber,
+        countSystemCommands,
+        isRenderRuntime: IS_RENDER_RUNTIME
+    })
+]);
 
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
@@ -6657,78 +6670,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
     
 
-    // .status — overall bot state + owner-only deployment identity.
-    // The Render details make it possible to identify which duplicate service
-    // owns the live WhatsApp socket during a 440 connection conflict.
-    if (token === '.status') {
-        const mu = process.memoryUsage();
-        const heapUsed = (mu.heapUsed / 1024 / 1024).toFixed(0);
-        const isDevOrOwner = isSenderOwner || isDevNumber(senderJid);
-        const serviceName = process.env.RENDER_SERVICE_NAME || '(unknown)';
-        const serviceId = process.env.RENDER_SERVICE_ID || '(unknown)';
-        const instanceId = process.env.RENDER_INSTANCE_ID || '(unknown)';
-        const externalUrl = process.env.RENDER_EXTERNAL_URL
-            || (process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : '(none)');
-        const renderCommit = String(process.env.RENDER_GIT_COMMIT || '').slice(0, 7) || '(unknown)';
-        const deploymentIdentity = isDevOrOwner
-            ? `   🌐 *HOST* :: ${IS_RENDER_RUNTIME ? 'RENDER' : 'NON_RENDER'}\n` +
-              `   🛰️ *SERVICE* :: ${serviceName}\n` +
-              `   🆔 *SERVICE_ID* :: ${serviceId}\n` +
-              `   🧬 *INSTANCE* :: ${instanceId}\n` +
-              `   📦 *COMMIT* :: ${renderCommit}\n` +
-              `   🔗 *URL* :: ${externalUrl}\n`
-            : '';
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *SYSTEM_STATUS* █▓▒░\n\n` +
-            `   🔋 *MODE* :: ${loadBotMode(phoneNumber) === 'owner' ? 'OWNER_ONLY' : 'PUBLIC'}\n` +
-            `   ⏱️ *UPTIME* :: ${runtimeUptime()}\n` +
-            (isDevOrOwner ? `   👥 *SESSIONS* :: ${waSessions.size}\n` : ``) +
-            deploymentIdentity +
-            `   💾 *MEMORY* :: ${heapUsed}MB\n\n` +
-            `   " *The machine does not sleep.*\n     *The machine only waits.* "`
-        ), msg);
-        return;
-    }
-
-    // .session — current session info
-    if (token === '.session') {
-        const isDevOrOwner = isSenderOwner || isDevNumber(senderJid);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *ACTIVE_SESSION* █▓▒░\n\n` +
-            `   📱 *PHONE* :: ${phoneNumber}\n` +
-            `   📡 *JID* :: ${sock.user?.id || 'unknown'}\n` +
-            (isDevOrOwner ? `   🔗 *SOCKETS* :: ${waSessions.size}\n` : ``) +
-            `   " *This is but one of many*\n     *eyes in the void.* "`
-        ), msg);
-        return;
-    }
-
-    // .sessions — list linked sessions (DEV ONLY)
-    if (token === '.sessions') {
-        // Only a dev (from the DEV_NUMBERS env var, comma-separated) may view
-        // the full linked-session list.
-        if (!isSenderOwner && !isDevNumber(senderJid)) {
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ╾━━━ ACCESS_DENIED ━━━╼\n\n` +
-                `   🔒  *YOU ARE NOT THE ARCHITECT.*\n\n` +
-                `   The linked-session registry is\n` +
-                `   reserved for developers only.\n\n` +
-                `   " You do not hold the key\n` +
-                `     to this room. "`
-            ), msg);
-            return;
-        }
-        const nums = [...waSessions.keys()];
-        const list = nums.length ? nums.map(n => `   • ${n}`).join('\n') : '   • _none linked_';
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *LINKED_SESSIONS* █▓▒░\n\n` +
-            `   🔢 *COUNT* :: ${nums.length}\n\n` +
-            `${list}\n\n` +
-            `   " *Every vessel is a voice*\n     *in the choir of night.* "`
-        ), msg);
-        return;
-    }
-
     // .listgc — list groups the bot is in
     if (token === '.listgc') {
         try {
@@ -6978,32 +6919,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
     // ──────────────────────────────────────────────
-
-    // .botinfo — about the bot
-    if (token === '.botinfo') {
-        const cmdCount = countSystemCommands();
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CORE_IDENTITY* █▓▒░\n\n` +
-            `   ⧓ *NAME* :: EVENTIDE OMEGA\n` +
-            `   ⧓ *VERSION* :: v1.0.0_STABLE\n` +
-            `   ⧓ *UPTIME* :: ${runtimeUptime()}\n` +
-            `   ⧓ *COMMANDS* :: ${cmdCount}\n` +
-            `   ⧓ *CORE* :: WA-MULTI-BOT\n\n` +
-            `   " The eclipse does not\n     end. It only waits. "`
-        ), msg);
-        return;
-    }
-
-    // .alive — health splash
-    if (token === '.alive') {
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *VESSEL_STATUS* █▓▒░\n\n` +
-            `   💓 *STATE* :: ALIVE\n` +
-            `   ⏱️ *UPTIME* :: ${runtimeUptime()}\n\n` +
-            `   " The machine lives.\n     The void holds. "`
-        ), msg);
-        return;
-    }
 
     // .profile — show the host account's own info
     if (token === '.profile') {
@@ -7395,17 +7310,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         } catch (err) {
             await safeWaReply(sock, remoteJid, `❌ Could not unblock. Error: ${err?.message}`, msg);
         }
-        return;
-    }
-
-    // .cmdstats — count of commands (dev)
-    if (token === '.cmdstats') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CMD_STATS* █▓▒░\n\n` +
-            `   ✦ *COMMANDS* :: ${countSystemCommands()}\n\n` +
-            `   " A growing arsenal. "`
-        ), msg);
         return;
     }
 
