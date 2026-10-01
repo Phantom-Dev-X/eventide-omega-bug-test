@@ -52,6 +52,7 @@ import { createSocketService } from './src/whatsapp/socket.js';
 import { createReconnectionService } from './src/whatsapp/reconnection.js';
 import { createConnectionEventService } from './src/whatsapp/connection-events.js';
 import { createMessageEventService } from './src/whatsapp/message-events.js';
+import { createMessagePipeline, parseCommandInput } from './src/whatsapp/message-pipeline.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3158,6 +3159,16 @@ function setupSocketEvents(sock, phoneNumber, tgId, authDir, version, isRestore)
     );
 }
 
+const messagePipeline = createMessagePipeline({
+    verboseLogs: VERBOSE_LOGS,
+    isRecentMessage,
+    isIgnoredRemoteJid,
+    handleAntideleteRevoke,
+    trimForLog,
+    log,
+    logError
+});
+
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
 // ──────────────────────────────────────────────
@@ -4392,58 +4403,22 @@ async function handleMenuVote(sock, remoteJid, phoneNumber, votedOptionId, pollI
 }
 
 async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
-    const remoteJid = msg?.key?.remoteJid || 'unknown';
-    const msgId = msg?.key?.id || 'unknown';
-    const participant = msg?.key?.participant || 'none';
-    const fromMe = !!msg?.key?.fromMe;
-    const pushName = msg?.pushName || 'unknown';
-    const recent = isRecentMessage(msg);
+    const incoming = await messagePipeline.preprocessIncomingMessage({
+        sock,
+        message: msg,
+        phoneNumber,
+        eventType
+    });
+    if (!incoming) return;
 
-    if (VERBOSE_LOGS) log(
-        'WA-MSG',
-        `${phoneNumber}: incoming event message seen | eventType=${eventType} id=${msgId} jid=${remoteJid} participant=${participant} fromMe=${fromMe} pushName=${trimForLog(pushName, 60)} recent=${recent}`
-    );
-
-    if (isIgnoredRemoteJid(remoteJid)) {
-        log('WA-MSG', `${phoneNumber}: skipping ignored jid ${remoteJid}`);
-        return;
-    }
-
-    if (!msg?.message) {
-        log('WA-MSG', `${phoneNumber}: message ${msgId} has no message payload. Skipping.`);
-        return;
-    }
-
-    // 🛡️ Revoke packets (delete-for-everyone) can arrive as upserts.
-    // Recover first, and never cache the revoke itself.
-    const protoIncoming = msg.message?.protocolMessage;
-    if (protoIncoming && (protoIncoming.type === 0 || protoIncoming.type === 'REVOKE')) {
-        try { await handleAntideleteRevoke(sock, phoneNumber, msg.key, protoIncoming.key || msg.key); }
-        catch (err) { logError('ANTIDELETE', `${phoneNumber}: upsert revoke failed`, err); }
-        return;
-    }
-
-    // 🛡️ EVENT TYPES (Baileys): 'notify' = live messages (real user input),
-    // 'append' = everything else — history sync, offline-caught-up messages,
-    // and CRITICALLY the bot's OWN sent messages (Baileys re-emits them here
-    // with fromMe=true, emitOwnEvents defaults to true). See messages-send.js:
-    //   upsertMessage(fullMsg, 'append')
-    const shouldProcessEvent = eventType === 'notify' || eventType === 'append';
-    if (!shouldProcessEvent) {
-        if (VERBOSE_LOGS) log('WA-MSG', `${phoneNumber}: skipping eventType=${eventType} for message ${msgId} because it is not processable.`);
-        return;
-    }
-
-    // 🛡️ GLOBAL ANTI-ECHO: ignore EVERY message that is from the bot account
-    // itself AND arrived as 'append' (own sent-message echoes + offline sync of
-    // the bot's own messages). This kills the bot-replying-to-itself loop at
-    // the root, for every feature — not just help mode.
-    // Live messages from another device of the bot number still arrive as
-    // 'notify' + fromMe and keep working.
-    if (fromMe && eventType === 'append') {
-        if (VERBOSE_LOGS) log('WA-MSG', `${phoneNumber}: skipped own echo (append+fromMe) | id=${msgId} jid=${remoteJid}`);
-        return;
-    }
+    const {
+        remoteJid,
+        messageId: msgId,
+        participant,
+        fromMe,
+        pushName,
+        recent
+    } = incoming;
 
     // 🧪 TEMPORARY `.crash-ios <number>` — IOZK probe (delete with the other test
     // commands when antibug testing ends). Owner/dev only, works from any chat.
@@ -5123,22 +5098,15 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    const text = parsed.text.trim();
-    const normalized = text.trim();
-    const firstWord = normalized.split(/\s+/)[0];
-    const args = normalized.split(/\s+/).slice(1);
-
-    // ⚙️ Dynamic prefix support: load this bot's configured prefix (default ".").
-    // Normalize the token so all command checks (which use ".cmd") keep working
-    // even when the prefix is custom (e.g. ">ping" -> ".ping").
     const botConfig = loadBotConfig(phoneNumber);
-    const prefix = botConfig.prefix || '.';
-    let token = firstWord.toLowerCase();
-    let startsWithDot = normalized.startsWith('.');
-    if (prefix !== '.' && firstWord.toLowerCase().startsWith(prefix.toLowerCase())) {
-        token = '.' + firstWord.slice(prefix.length).toLowerCase();
-        startsWithDot = true;
-    }
+    const {
+        text,
+        normalized,
+        args,
+        prefix,
+        token,
+        startsWithDot
+    } = parseCommandInput(parsed.text, botConfig);
 
     // ──────────────────────────────────────────────
     // 🎭 PERSONA GATE — if this session has no persona bound yet, ANY command
