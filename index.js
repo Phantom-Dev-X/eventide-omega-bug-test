@@ -65,6 +65,7 @@ import { createAccountToolCommands } from './src/commands/system/account-tools.j
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
+import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupWarningCommands } from './src/commands/group/warnings.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
@@ -3322,6 +3323,14 @@ const commandRegistry = createCommandRegistry([
         normalizeJid: jidNormalizedUser,
         logError
     }),
+    ...createGroupInformationCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        normalizeJid: jidNormalizedUser,
+        groupChannelLink: GROUP_CHANNEL_LINK,
+        isDevNumber,
+        isUserGroupAdmin
+    }),
     ...createGroupWarningCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5902,77 +5911,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 👥 GROUP COMMANDS
     // ──────────────────────────────────────────────
-
-    // 8. .groupinfo — group details
-    if (token === '.groupinfo') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        try {
-            const meta = await sock.groupMetadata(remoteJid);
-            const admins = meta.participants.filter(p => p.admin || (meta.owner && jidNormalizedUser(p.id) === jidNormalizedUser(meta.owner))).length;
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *DOMINION_INFO* █▓▒░\n\n` +
-                `   ✦ *NAME* :: ${meta.subject}\n` +
-                `   ✦ *MEMBERS* :: ${meta.participants.length}\n` +
-                `   ✦ *ADMINS* :: ${admins}\n` +
-                `   ✦ *CREATED* :: ${meta.creation ? new Date(meta.creation * 1000).toLocaleDateString() : 'unknown'}\n\n` +
-                `   " Every domain has\n     its own truth. "`
-            ), msg);
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // 9. .tagall <msg> — tag everyone (visible @list)
-    if (token === '.tagall') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const tagText = args.join(' ').trim() || 'Attention all';
-        try {
-            const meta = await sock.groupMetadata(remoteJid);
-            const jids = meta.participants.map(p => p.id);
-            const mentions = jids.map(j => '@' + j.split('@')[0]);
-            await sock.sendMessage(remoteJid, {
-                text: `${GROUP_CHANNEL_LINK}\n\n*${tagText}*\n\n${mentions.join(' ')}`,
-                mentions: jids
-            });
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // 9b. .hidetag / .ht — silent mention. Also caught anywhere in the line above.
-    if (token === '.hidetag' || token === '.ht') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        try {
-            const senderAdmin = isSenderOwner || isDevNumber(senderJid) || await isUserGroupAdmin(sock, remoteJid, senderJid);
-            if (!senderAdmin) { await safeWaReply(sock, remoteJid, '⛔ Group Admin only.', msg); return; }
-            const meta = await sock.groupMetadata(remoteJid);
-            const jids = meta.participants.map(p => p.id);
-            await sock.sendMessage(remoteJid, { text: args.join(' ').trim() || '‎', mentions: jids });
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // 10. .getvcf — get contact card of all members
-    if (token === '.getvcf') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        try {
-            const meta = await sock.groupMetadata(remoteJid);
-            const members = meta.participants.map(p => p.id);
-            let vcard = '';
-            let i = 1;
-            for (const jid of members) {
-                const num = jid.split('@')[0];
-                vcard += `BEGIN:VCARD\nVERSION:3.0\nFN:${num}\nN:${num};;;\nTEL;TYPE=CELL:+${num}\nEND:VCARD\n`;
-                i++;
-                if (i > 200) break; // cap at 200
-            }
-            const buf = Buffer.from(vcard, 'utf8');
-            await sock.sendMessage(remoteJid, {
-                document: buf,
-                mimetype: 'text/x-vcard',
-                fileName: `members_${members.length}.vcf`
-            });
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
 
     // 🛡️ ANTI COMMANDS — toggle group protections (admin gated)
     const handleAntiToggle = async (which, val, extraRaw = '') => {
