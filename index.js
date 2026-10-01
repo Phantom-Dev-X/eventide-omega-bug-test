@@ -75,6 +75,7 @@ import { createSudoCommands } from './src/commands/system/sudo.js';
 import { createConfigDeleteCommands } from './src/commands/system/config-delete.js';
 import { createHelpCommands } from './src/commands/system/help.js';
 import { createAiFunCommands } from './src/commands/fun/ai.js';
+import { createTicTacToeCommands } from './src/commands/game/tic-tac-toe.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3448,6 +3449,28 @@ const commandRegistry = createCommandRegistry([
         logError,
         safeWaReply
     }),
+    ...createTicTacToeCommands({
+        getTttGame,
+        tttSamePlayer,
+        tttClearTimer,
+        tttDeletePoll,
+        tttPaint,
+        tttArmTimer,
+        tttGames,
+        tttKey,
+        buildOmegaTerminal,
+        tttIsReplyToBoard,
+        tttTryMove,
+        resolveTargetJid,
+        tttOfferChallenge,
+        tttStart,
+        tttResolveLabel,
+        tttCollectIds,
+        tttSetupSessions,
+        sendMenuPoll,
+        logError,
+        safeWaReply
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5623,106 +5646,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     if (isGameCommand(token)) {
         const handled = await handleGameCommand({ sock, phoneNumber, remoteJid, senderJid, token, args });
         if (handled) return;
-    }
-
-    // 🎮 TIC TAC TOE — premium arena
-    if (token === '.tictactoe' || token === '.ttt' || token === '.xo') {
-      try {
-        const sub = (args[0] || '').toLowerCase();
-        const live = getTttGame(phoneNumber, remoteJid);
-        if (sub === 'yes' || sub === 'accept') {
-            const g = getTttGame(phoneNumber, remoteJid);
-            if (!g || g.status !== 'pending') { await sock.sendMessage(remoteJid, { text: '❌ No pending challenge.' }); return; }
-            if (!tttSamePlayer(senderJid, g.o) && !isSenderOwner) { await sock.sendMessage(remoteJid, { text: '❌ Only the challenged soul may accept.' }); return; }
-            g.status = 'active';
-            tttClearTimer(g);
-            g.boardKey = null;
-            await tttDeletePoll(sock, g);
-            await tttPaint(sock, phoneNumber, g);
-            tttArmTimer(sock, phoneNumber, g);
-            return;
-        }
-        if (sub === 'no' || sub === 'decline') {
-            const g = getTttGame(phoneNumber, remoteJid);
-            if (g && g.status === 'pending') {
-                tttClearTimer(g); await tttDeletePoll(sock, g); tttGames.delete(tttKey(phoneNumber, remoteJid));
-                await sock.sendMessage(remoteJid, { text: '🕊 Challenge declined. The grid sleeps.' });
-            }
-            return;
-        }
-        if (sub === 'quit' || sub === 'end' || sub === 'stop' || sub === 'close') {
-            if (live) { tttClearTimer(live); await tttDeletePoll(sock, live); tttGames.delete(tttKey(phoneNumber, remoteJid)); }
-            await sock.sendMessage(remoteJid, { text: buildOmegaTerminal(`   ✦ *ARENA_CLOSED*\n\n   " You folded the grid. "`) });
-            return;
-        }
-        if (sub === 'board' || sub === 'show') {
-            if (!live) { await sock.sendMessage(remoteJid, { text: '❌ No live arena. *.ttt* to open one.' }); return; }
-            live.boardKey = null;
-            await tttPaint(sock, phoneNumber, live);
-            return;
-        }
-        if (live && live.status === 'active' && /^[1-9]$/.test(sub)) {
-            if (!tttIsReplyToBoard(msg, live)) {
-                await sock.sendMessage(remoteJid, { text: '↪ Reply to the *board* with the number. A loose 5 in chat is just chat.' });
-                return;
-            }
-            await tttTryMove(sock, phoneNumber, remoteJid, senderJid, parseInt(sub, 10) - 1, msg);
-            return;
-        }
-        if (live && live.status === 'active') {
-            await sock.sendMessage(remoteJid, {
-                text: buildOmegaTerminal(
-                    `   ░▒▓█ *ARENA_LIVE* █▓▒░\n\n` +
-                    `   A grid is already breathing here.\n` +
-                    `   *Reply to the board* with 1–9.\n` +
-                    `   *.ttt quit*  folds it.\n` +
-                    `   *.ttt board*  redraws it.`
-                )
-            });
-            return;
-        }
-        const rival = resolveTargetJid(msg, args);
-        if (rival) {
-            await tttOfferChallenge(sock, phoneNumber, remoteJid, senderJid, rival);
-            return;
-        }
-        if (['bot', 'easy', 'medium', 'hard', 'void'].includes(sub)) {
-            const diff = sub === 'easy' || sub === 'hard' || sub === 'medium' ? sub : 'medium';
-            await tttStart(sock, phoneNumber, remoteJid, {
-                x: senderJid, o: 'BOT', vsBot: true, difficulty: diff,
-                xLabel: await tttResolveLabel(sock, phoneNumber, senderJid, msg),
-                oLabel: 'VOID',
-                xIds: tttCollectIds(sock, phoneNumber, senderJid, msg)
-            });
-            return;
-        }
-        tttSetupSessions.set(phoneNumber, {
-            step: 'mode', chat: remoteJid, host: senderJid,
-            hostLabel: await tttResolveLabel(sock, phoneNumber, senderJid, msg),
-            hostIds: tttCollectIds(sock, phoneNumber, senderJid, msg)
-        });
-        await sock.sendMessage(remoteJid, {
-            text: buildOmegaTerminal(
-                `   ░▒▓█ *EVENTIDE ARENA* █▓▒░\n\n` +
-                `   TIC · TAC · TOE\n\n` +
-                `   Pick a path below.\n` +
-                `   • Void = 3 levels (easy / mid / hard)\n` +
-                `   • Human = first Accept sits\n` +
-                `   • Or *.ttt @user* to invite one soul\n\n` +
-                `   Moves: *reply to the board* with 1–9.\n` +
-                `   1 min a turn · 3 min of silence kills it.`
-            )
-        });
-        const openPoll = await sendMenuPoll(sock, remoteJid, phoneNumber, 'OPEN THE GRID', ['Play vs Bot', 'Play vs Human'], ['ttt_vs_bot', 'ttt_vs_p']);
-        const sess = tttSetupSessions.get(phoneNumber) || {};
-        sess.modePollKey = openPoll?.key || null;
-        tttSetupSessions.set(phoneNumber, sess);
-        return;
-      } catch (err) {
-        logError('TTT', `${phoneNumber}: .ttt failed`, err);
-        await safeWaReply(sock, remoteJid, `❌ Arena failed to open.\n${err?.message || err}\n\nTry *.ttt* again.`, msg).catch(() => {});
-        return;
-      }
     }
 
     const replyText = resolveCommandReply(token, phoneNumber);
