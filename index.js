@@ -67,6 +67,7 @@ import { createUtilitySystemCommands } from './src/commands/system/utilities.js'
 import { createConfigurationCommands } from './src/commands/system/configuration.js';
 import { createAccessModeCommands } from './src/commands/system/access-mode.js';
 import { createCustomizationCommands } from './src/commands/system/customization.js';
+import { createConfigManagementCommands } from './src/commands/system/config-management.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3334,6 +3335,19 @@ const commandRegistry = createCommandRegistry([
         isDevNumber,
         saveBotConfig
     }),
+    ...createConfigManagementCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        downloadMediaMessage,
+        createSilentLogger: () => pino({ level: 'silent' }),
+        getAntideleteState,
+        loadBotMode,
+        splitApiKeys,
+        defaultBotConfig: DEFAULT_BOT_CONFIG,
+        saveBotConfig,
+        logError
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5594,68 +5608,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // ⚙️ CONFIG COMMANDS (change the bot / host account)
     // ──────────────────────────────────────────────
-
-    // .setpp — reply to an image to set the host account's profile pic
-    if (token === '.setpp') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        const qimg = quoted?.imageMessage || quoted?.stickerMessage;
-        if (!qimg) {
-            await safeWaReply(sock, remoteJid, '❌ Reply to an image with .setpp to change the profile picture.', msg);
-            return;
-        }
-        try {
-            const media = await downloadMediaMessage({ message: { imageMessage: qimg } }, 'buffer', {}, { logger: pino({ level: 'silent' }) });
-            await sock.updateProfilePicture(sock.user?.id, media);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *AVATAR_SWAPPED* █▓▒░\n\n` +
-                `   ✦ *ACTION* :: PROFILE_PIC_SET\n` +
-                `   ✦ *STATUS* :: ACCOUNT_UPDATED\n\n` +
-                `   " The face of the vessel\n     is rewritten. "`
-            ), msg);
-        } catch (e) {
-            logError('CONFIG', 'setpp failed', e);
-            await safeWaReply(sock, remoteJid, `❌ Could not set profile pic. Error: ${e?.message}`, msg);
-        }
-        return;
-    }
-
-    // .settings — show current config
-    if (token === '.settings') {
-        const aliases = Object.keys(botConfig.aliases || {});
-        const ad = getAntideleteState(phoneNumber);
-        const ar = botConfig.autoreact || {};
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CONFIG_MATRIX* █▓▒░\n\n` +
-            `   ✦ *PREFIX* :: ${prefix}\n` +
-            `   ✦ *MODE* :: ${loadBotMode(phoneNumber) === 'owner' ? 'OWNER_ONLY' : 'PUBLIC'}\n` +
-            `   ✦ *ALIASES* :: ${aliases.length}\n` +
-            `   ✦ *AUTOREACT* :: ${ar.enabled ? 'ON' : 'OFF'}\n` +
-            `   ✦ *ANTIDELETE* :: ${ad.enabled ? 'ON' : 'OFF'}\n` +
-            `   ✦ *AD_ENDS* :: G${(ad.endpoints?.groups || []).length}/C${(ad.endpoints?.channels || []).length}/P${(ad.endpoints?.contacts || []).length}\n` +
-            `   ✦ *NAME* :: ${botConfig.name || '(account default)'}\n` +
-            `   ✦ *BIO* :: ${botConfig.bio || '(account default)'}\n` +
-            `   ✦ *PLUGIN KEYS* :: ${splitApiKeys(botConfig.geminiApiKey).length}\n` +
-            `   " You are the architect\n     of these settings. "`
-        ), msg);
-        return;
-    }
-
-    // .reset — reset config to defaults
-    if (token === '.reset') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const resetCfg = structuredClone(DEFAULT_BOT_CONFIG);
-        resetCfg.bootDmSent = true; // never re-spam the welcome DMs after a factory reset
-        saveBotConfig(phoneNumber, resetCfg);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *CONFIG_WIPED* █▓▒░\n\n` +
-            `   ✦ *PREFIX* :: .\n` +
-            `   ✦ *ALIASES* :: 0\n` +
-            `   ✦ *STATUS* :: FACTORY_RESET\n\n` +
-            `   " The machine forgets\n     your shaping. It is\n     pristine once more. "`
-        ), msg);
-        return;
-    }
 
     // ──────────────────────────────────────────────
     // 🔒 PRIVACY ACCESS LOCK (.mode public / owner)
