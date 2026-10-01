@@ -53,6 +53,7 @@ import { createReconnectionService } from './src/whatsapp/reconnection.js';
 import { createConnectionEventService } from './src/whatsapp/connection-events.js';
 import { createMessageEventService } from './src/whatsapp/message-events.js';
 import { createMessagePipeline, parseCommandInput } from './src/whatsapp/message-pipeline.js';
+import { createMessageMiddleware } from './src/whatsapp/message-middleware.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3169,6 +3170,23 @@ const messagePipeline = createMessagePipeline({
     logError
 });
 
+const messageMiddleware = createMessageMiddleware({
+    verboseLogs: VERBOSE_LOGS,
+    recentMessages,
+    mutedUsers,
+    slimProto,
+    logMessage,
+    normalizeJid: jidNormalizedUser,
+    maskApiKey,
+    trimForLog,
+    loadBotConfig,
+    loadBotMode,
+    isDevNumber,
+    isSudo,
+    log,
+    logError
+});
+
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
 // ──────────────────────────────────────────────
@@ -4947,156 +4965,18 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    // 📦 Cache + persist messages so antidelete can recover full history.
-    try {
-        recentMessages.set(`${phoneNumber}:${remoteJid}:${msgId}`, {
-            key: msg.key,
-            message: slimProto(msg.message),
-            messageTimestamp: msg.messageTimestamp,
-            pushName: msg.pushName,
-            _cachedAt: Date.now()
-        });
-        if (recentMessages.size > 300) {
-            const now = Date.now();
-            for (const [k, v] of recentMessages) {
-                if (now - (v._cachedAt || 0) > 30 * 60 * 1000) recentMessages.delete(k);
-            }
-            if (recentMessages.size > 300) {
-                const first = recentMessages.keys().next().value;
-                if (first) recentMessages.delete(first);
-            }
-        }
-        // Persist to the message log (full history since pairing)
-        logMessage(phoneNumber, remoteJid, msg);
-    } catch (_) {}
-
-    // 🔇 MUTE ENFORCEMENT: if the sender is muted in this group, delete their message.
-    try {
-        if (remoteJid.endsWith('@g.us') && !fromMe) {
-            const muteKey = `${phoneNumber}:${remoteJid}`;
-            const muted = mutedUsers.get(muteKey);
-            if (muted && muted.has(jidNormalizedUser(participant))) {
-                await sock.sendMessage(remoteJid, { delete: { remoteJid, id: msgId, participant } }).catch(()=>{});
-                log('MUTE', `${phoneNumber}: deleted muted user's message in ${remoteJid}`);
-                return;
-            }
-        }
-    } catch (err) { logError('MUTE', `${phoneNumber}: mute delete failed`, err); }
-
-    const parseTextLog = /^\.(plugin|pluginkey)\b/i.test(String(parsed.text || ''))
-        ? String(parsed.text).replace(/(AIza[0-9A-Za-z_-]{10,}|AQ\.[0-9A-Za-z_-]{10,}|ABQ[0-9A-Za-z_-]{10,})/gi, (m) => maskApiKey(m))
-        : trimForLog(parsed.text, 250);
-    if (VERBOSE_LOGS) log(
-        'WA-PARSE',
-        `${phoneNumber}: parse result | topLevel=${parsed.topLevelType} wrappers=${parsed.wrapperChain.join(' > ') || 'none'} leaf=${parsed.leafType} source=${parsed.source} text=${JSON.stringify(parseTextLog)}`
-    );
-
-    // ⚡ REACT-V4 — react right here, on the SAME parsed text the command
-    // flow below uses (the WA-CMD logs prove this path works), for BOTH
-    // notify and append event types. Every outcome logs so it can never
-    // fail silently again. Awaited → the ⚡ always lands before the reply.
-    // 'notify' + fromMe = the OWNER typing from another device of the bot's
-    // own number — those get the ⚡ too. The bot's own sent echoes
-    // ('append' + fromMe) never reach here (anti-echo return above).
-    try {
-        if ((!fromMe || eventType === 'notify') && parsed.text && !remoteJid.endsWith('@newsletter')) {
-            const reactPfx = String(loadBotConfig(phoneNumber)?.prefix || '.');
-            const reactEsc = reactPfx.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const reactMatch = new RegExp(`^${reactEsc}[a-z0-9_]{1,20}\\b`, 'i').exec(parsed.text.trim());
-            if (reactMatch) {
-                const ts = typeof msg?.messageTimestamp === 'object'
-                    ? (msg.messageTimestamp?.low || 0)
-                    : Number(msg?.messageTimestamp || 0);
-                const fresh = !ts || ts > (Date.now() / 1000 - 300);
-                if (!fresh) {
-                    log('REACT', `${phoneNumber}: stale cmd '${reactMatch[0]}' skipped (age>5min)`);
-                } else {
-                    const reactSender = msg.key.participant || msg.key.remoteJid;
-                    // `fromMe` is the reliable owner signal. In LID-addressed
-                    // groups, participant can be `<lid>@lid` while sock.user.id
-                    // is `<phone>:<device>@s.whatsapp.net`; comparing those JIDs
-                    // alone incorrectly classifies the owner's own command as a
-                    // non-owner. The command flow uses fromMe too, which is why
-                    // it could reply to .ping while silently skipping ⚡.
-                    const reactOwner = fromMe
-                        || jidNormalizedUser(reactSender) === jidNormalizedUser(sock.user?.id || '')
-                        || isDevNumber(reactSender);
-                    if (loadBotMode(phoneNumber) !== 'owner' || reactOwner || isSudo(phoneNumber, reactSender)) {
-                        log('REACT', `${phoneNumber}: cmd '${reactMatch[0]}' on ${msgId} (type=${eventType}, fromMe=${fromMe}) — sending ⚡ now...`);
-                        await sock.sendMessage(remoteJid, { react: { text: '⚡', key: msg.key } }, {});
-                        log('REACT', `${phoneNumber}: ⚡ reaction SENT for ${msgId}`);
-                    } else {
-                        // Always log the gate decision; this must never be
-                        // hidden behind VERBOSE_LOGS during reaction debugging.
-                        log('REACT', `${phoneNumber}: owner-only mode blocked reaction for ${msgId} (sender=${reactSender}, fromMe=${fromMe})`);
-                    }
-                }
-            } else if (VERBOSE_LOGS) {
-                log('REACT', `${phoneNumber}: no cmd prefix in msg ${msgId} (fromMe=${fromMe})`);
-            }
-        }
-    } catch (err) {
-        logError('REACT', `${phoneNumber}: react FAILED for ${msgId}`, err);
-    }
-
-    // 🛡️ ANTI ENFORCEMENT: antilink / antimention / antiforward (delete offending msgs)
-    try {
-        if (remoteJid.endsWith('@g.us') && !fromMe && msg.message) {
-            const antiCfg = (loadBotConfig(phoneNumber).anti || {});
-            const textLower = parsed.text.toLowerCase();
-            const isLink = /https?:\/\/|chat\.whatsapp\.com/i.test(textLower);
-            const isMention = !!(msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.length);
-            const isFwd = !!msg.message?.extendedTextMessage?.contextInfo?.isForwarded;
-            let violate = false;
-            if (antiCfg.antilink?.[remoteJid] === 'on' && isLink) violate = true;
-            else if (antiCfg.antimention?.[remoteJid] === 'on' && isMention) violate = true;
-            else if (antiCfg.antiforward?.[remoteJid] === 'on' && isFwd) violate = true;
-            if (violate) {
-                await sock.sendMessage(remoteJid, { delete: { remoteJid, id: msgId, participant } }).catch(()=>{});
-                log('ANTI', `${phoneNumber}: deleted violating msg in ${remoteJid}`);
-                return;
-            }
-        }
-    } catch (err) { logError('ANTI', `${phoneNumber}: anti enforcement failed`, err); }
-
-    // 🎭 AUTOREACT: if enabled, react to messages from configured endpoints.
-    // Endpoints are grouped by type: groups / channels / contacts.
-    try {
-        const arCfg = loadBotConfig(phoneNumber).autoreact || {};
-        if (arCfg.enabled && !msg.key?.fromMe) {
-            const eps = arCfg.endpoints || { groups: [], channels: [], contacts: [] };
-            let shouldReact = false;
-            if (remoteJid.endsWith('@g.us')) {
-                shouldReact = eps.groups.includes(remoteJid);
-            } else if (remoteJid.endsWith('@newsletter')) {
-                // Channels can be stored as a full JID or a partial ID/link.
-                shouldReact = (eps.channels || []).some(ch => {
-                    const s = String(ch || '');
-                    return s === remoteJid || (s && (s.includes(remoteJid) || remoteJid.includes(s)));
-                });
-            } else if (remoteJid.endsWith('@s.whatsapp.net') || remoteJid.endsWith('@lid')) {
-                // Contacts are stored as digits ("234…"). Compare digits so a
-                // stored number matches regardless of @s.whatsapp.net / @lid.
-                const remoteDigits = String(remoteJid).split('@')[0].replace(/\D/g, '');
-                shouldReact = !!remoteDigits && (eps.contacts || []).some(c => String(c).replace(/\D/g, '') === remoteDigits);
-            }
-            if (shouldReact) {
-                const reactEmoji = ['🔥','⚡','✨','👁️','🌑','✅','❤️','🙌'][Math.floor(Math.random()*8)];
-                await sock.sendMessage(remoteJid, { react: { text: reactEmoji, key: msg.key } }).catch(()=>{});
-                log('AUTOREACT', `${phoneNumber}: reacted to ${remoteJid}`);
-            }
-        }
-    } catch (err) {
-        logError('AUTOREACT', `${phoneNumber}: autoreact failed`, err);
-    }
-
-    // 📢 Channel posts (@newsletter): the AUTOREACT pass above has already
-    // run. Skip the command flow for them — the bot must not treat channel
-    // posts as commands or answer them.
-    if (remoteJid.endsWith('@newsletter')) {
-        if (VERBOSE_LOGS) log('WA-MSG', `${phoneNumber}: channel post ${msgId} — command flow skipped`);
-        return;
-    }
+    const continueToDispatch = await messageMiddleware.runMessageMiddleware({
+        sock,
+        message: msg,
+        phoneNumber,
+        eventType,
+        remoteJid,
+        messageId: msgId,
+        participant,
+        fromMe,
+        parsed
+    });
+    if (!continueToDispatch) return;
 
     const botConfig = loadBotConfig(phoneNumber);
     const {

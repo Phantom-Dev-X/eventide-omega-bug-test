@@ -16,6 +16,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/whatsapp/connection-events.js` — pairing, open/ready, notification, and close-event routing
 - `src/whatsapp/message-events.js` — message, poll, antidelete, history, and group-participant event routing
 - `src/whatsapp/message-pipeline.js` — transport preflight, echo filtering, revoke routing, and command-token parsing
+- `src/whatsapp/message-middleware.js` — caching, moderation, command acknowledgement, and endpoint auto-reactions
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
