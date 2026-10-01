@@ -89,6 +89,7 @@ import { createAiEngine } from './src/ai/ai-engine.js';
 import { createBugProbeEngine } from './src/testing/bug-probe-engine.js';
 import { createBasicHelpers } from './src/core/basic-helpers.js';
 import { createMessageContent } from './src/whatsapp/message-content.js';
+import { createAccessService } from './src/moderation/access-service.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -1137,43 +1138,15 @@ function isDevNumber(jid) {
     return devs.includes(num);
 }
 
-// 🛡️ SUDO SYSTEM — elevated users per session. Saved in bot_config.json so
-// they persist via Supabase on Render and on disk for the panel. Sudoes can
-// command the bot even when the bot is in owner mode.
-function normalizeDigits(s) {
-    return String(s || '').replace(/\D/g, '');
-}
-
-function isSudo(phoneNumber, jid) {
-    const sudos = loadBotConfig(phoneNumber).sudos || [];
-    if (!Array.isArray(sudos) || !sudos.length) return false;
-    const num = normalizeDigits(String(jid || '').split(':')[0].split('@')[0]);
-    return !!num && sudos.some(s => normalizeDigits(s) === num);
-}
-
-// 🛡️ POLL VOTING RIGHTS — who may vote on which poll the bot sent:
-//   • owner → everything
-//   • sudo → menu + game polls (they can navigate the bot) but NEVER
-//     bot-self config polls (persona_/helpp_/ar_/ad_/wn_/wg_/greet_ —
-//     those change the bot itself and stay owner-only)
-//   • everyone else → only game/ttt polls
-function canVoteOnPoll(phoneNumber, uniqVoters, ids, ownerJids) {
-    const voters = Array.isArray(uniqVoters) ? uniqVoters : [];
-    const list = Array.isArray(ids) ? ids : [];
-    if (voters.some(v => ownerJids.includes(v))) return true;
-    const isSudoVote = voters.some(v => isSudo(phoneNumber, v));
-    const isConfigPoll = list.some(id => /^(persona_|helpp_|ar_|ad_|wn_|wg_|greet_)/.test(String(id)));
-    if (isConfigPoll) return false; // bot-self settings: owner only, not even sudoes
-    const isMenuPoll = list.some(id => /^(rm_|owners|group|fun|bug|system|config)/.test(String(id)));
-    if (isMenuPoll) return isSudoVote; // menu navigation: owner + sudoes
-    const isTttPoll = list.some(id => String(id).startsWith('ttt_'));
-    const isArenaPoll = isGamePoll(list);
-    return isTttPoll || isArenaPoll;
-}
-
 // ──────────────────────────────────────────────
 // 🔧 BAILEYS HELPERS
 // ──────────────────────────────────────────────
+const accessService = createAccessService({
+    loadBotConfig,
+    isGamePoll
+});
+const { normalizeDigits, isSudo, canVoteOnPoll } = accessService;
+
 function getDisconnectCode(lastDisconnect) {
     return lastDisconnect?.error?.output?.statusCode
         ?? lastDisconnect?.error?.statusCode
