@@ -64,6 +64,7 @@ import { createAccountSystemCommands } from './src/commands/system/account.js';
 import { createAccountToolCommands } from './src/commands/system/account-tools.js';
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
+import { createConfigurationCommands } from './src/commands/system/configuration.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3307,6 +3308,17 @@ const commandRegistry = createCommandRegistry([
         groupChannelLink: GROUP_CHANNEL_LINK,
         logError
     }),
+    ...createConfigurationCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        saveBotConfig,
+        welcomeGoodbyeSessions,
+        autoreactSessions,
+        antiConfigSessions,
+        warnConfigSessions,
+        sendMenuPoll
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5938,31 +5950,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // 👥 GROUP COMMANDS
     // ──────────────────────────────────────────────
 
-    // .welcome / .goodbye / .greet — OWNER ONLY: choose Welcome or Goodbye, then enter message
-    if (token === '.welcome' || token === '.goodbye' || token === '.greet') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const preType = token === '.welcome' ? 'welcome' : token === '.goodbye' ? 'goodbye' : null;
-        if (preType) {
-            welcomeGoodbyeSessions.set(phoneNumber, { step: 'action', type: preType, group: remoteJid });
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *THRESHOLD_MATRIX* █▓▒░\n\n` +
-                `   Configure the ${preType}\n` +
-                `   message for this group.`
-            ));
-            await sendMenuPoll(sock, remoteJid, phoneNumber, preType === 'welcome' ? '✦ WELCOME MATRIX ✦' : '✦ GOODBYE MATRIX ✦', ['📝 Custom Message', '🎯 Default Message', '🚫 Disable'], preType === 'welcome' ? ['wg_wel_custom','wg_wel_default','wg_wel_off'] : ['wg_gb_custom','wg_gb_default','wg_gb_off']);
-        } else {
-            welcomeGoodbyeSessions.set(phoneNumber, { step: 'action', group: remoteJid });
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *THRESHOLD_MATRIX* █▓▒░\n\n` +
-                `   Which greeting do you want\n` +
-                `   to configure?`
-            ));
-            await sendMenuPoll(sock, remoteJid, phoneNumber, '✦ GREETING MATRIX ✦', ['👋 Set Welcome', '👋 Set Goodbye'], ['greet_welcome', 'greet_goodbye']);
-        }
-        return;
-    }
-
     // ──────────────────────────────────────────────
     // 🖥️ SYSTEM COMMANDS
     // ──────────────────────────────────────────────
@@ -6180,64 +6167,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             logError('TEST', `${phoneNumber}: .test failed`, err);
             await safeWaReply(sock, remoteJid, `❌ *TEST ERROR*\n\n${err?.message || err}`, msg);
         }
-        return;
-    }
-
-    // .autoreact on|off — toggle auto-reaction (system menu)
-    if (token === '.autoreact') {
-        if (!isSenderOwner) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
-        const val = args[0]?.toLowerCase();
-        if (val !== 'on' && val !== 'off') {
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *AUTOREACT* █▓▒░\n\n` +
-                `   ✦ *STATE* :: ${botConfig.autoreact?.enabled ? 'ON' : 'OFF'}\n\n` +
-                `   use: .autoreact on | .autoreact off\n\n` +
-                `   " Configure who gets\n     reacted via .autoreactconfig "`
-            ), msg);
-            return;
-        }
-        botConfig.autoreact = botConfig.autoreact || { enabled: false, endpoints: { groups: [], channels: [], contacts: [] } };
-        botConfig.autoreact.enabled = val === 'on';
-        saveBotConfig(phoneNumber, botConfig);
-        const warn = val === 'on' ? `\n\n   ⚠️ *WARNING* : Auto-reacting to\n   every message can look bot-like\n   and may risk your account being\n   flagged/banned. Toggle off anytime\n   with .autoreact off.` : '';
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *AUTOREACT* █▓▒░\n\n` +
-            `   ✦ *STATE* :: ${val === 'on' ? 'ON' : 'OFF'}\n` +
-            `   ✦ *ACTION* :: ${val === 'on' ? 'REACT_ENABLED' : 'REACT_DISABLED'}${warn}\n\n` +
-            `   " The void ${val === 'on' ? 'responds' : 'falls silent'}. "`
-        ), msg);
-        return;
-    }
-
-    // .autoreactconfig — configure autoreact endpoints (config menu)
-    if (token === '.autoreactconfig' || token === '.autoreact config') {
-        if (!isSenderOwner) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
-        const cfg = botConfig.autoreact || { enabled: false, endpoints: { groups: [], channels: [], contacts: [] } };
-        // Store session and send a poll: add vs delete
-        antiConfigSessions.delete(phoneNumber);
-        autoreactSessions.set(phoneNumber, { step: 'add_or_delete' });
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *AUTOREACT_CONFIG_MATRIX* █▓▒░\n\n` +
-            `   ✦ *STATE* :: ${cfg.enabled ? 'ON' : 'OFF'}\n` +
-            `   ✦ *GROUPS* :: ${(cfg.endpoints?.groups||[]).length}\n` +
-            `   ✦ *CHANNELS* :: ${(cfg.endpoints?.channels||[]).length}\n` +
-            `   ✦ *CONTACTS* :: ${(cfg.endpoints?.contacts||[]).length}\n\n` +
-            `   Choose what to do below.`
-        ), msg);
-        await sendMenuPoll(sock, remoteJid, phoneNumber, '✦ AUTOREACT MATRIX ✦', ['➕ Add Endpoint', '🗑️ Delete Endpoint'], ['ar_add', 'ar_delete']);
-        return;
-    }
-
-    // .cancel — abort any in-progress config poll flow
-    if (token === '.cancel') {
-        const had = antiConfigSessions.has(phoneNumber) || autoreactSessions.has(phoneNumber) || welcomeGoodbyeSessions.has(phoneNumber) || warnConfigSessions.has(phoneNumber);
-        antiConfigSessions.delete(phoneNumber);
-        autoreactSessions.delete(phoneNumber);
-        welcomeGoodbyeSessions.delete(phoneNumber);
-        warnConfigSessions.delete(phoneNumber);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            had ? `   ✦ *CANCELLED* :: no changes made.` : `   ✦ *IDLE* :: nothing to cancel.`
-        ), msg);
         return;
     }
 
