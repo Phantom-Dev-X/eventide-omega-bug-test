@@ -72,6 +72,7 @@ import { createPluginKeyCommands } from './src/commands/system/plugin-key.js';
 import { createDeploymentCommands } from './src/commands/system/deployment.js';
 import { createPersonaCommands } from './src/commands/system/persona.js';
 import { createSudoCommands } from './src/commands/system/sudo.js';
+import { createConfigDeleteCommands } from './src/commands/system/config-delete.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3400,6 +3401,21 @@ const commandRegistry = createCommandRegistry([
         normalizeDigits,
         normalizeJid: jidNormalizedUser
     }),
+    ...createConfigDeleteCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        warnConfigSessions,
+        antiConfigSessions,
+        autoreactSessions,
+        ensureWarnGroup,
+        getWarnState,
+        saveWarnState,
+        getAntideleteState,
+        listAntideleteEndpoints,
+        saveAntideleteState,
+        saveBotConfig
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5695,80 +5711,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             logError('TEST', `${phoneNumber}: .test failed`, err);
             await safeWaReply(sock, remoteJid, `❌ *TEST ERROR*\n\n${err?.message || err}`, msg);
         }
-        return;
-    }
-
-    // .del <idx ...> — delete endpoints by list index (antidelete if that list is open, else autoreact)
-    if (token === '.del') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const wnSess = warnConfigSessions.get(phoneNumber);
-        if (wnSess?.step === 'delete') {
-            const group = wnSess.group;
-            const gcfg = ensureWarnGroup(phoneNumber, group);
-            const phrases = gcfg.phrases || [];
-            const wIdxs = args.map(a => parseInt(a, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= phrases.length).sort((a, b) => b - a);
-            if (!wIdxs.length) {
-                await safeWaReply(sock, remoteJid, '❌ Invalid indices. use: .del 1 3 (from the phrase list)', msg);
-                return;
-            }
-            for (const i of wIdxs) phrases.splice(i - 1, 1);
-            gcfg.phrases = phrases;
-            const warn = getWarnState(phoneNumber);
-            warn.groups[group] = gcfg;
-            saveWarnState(phoneNumber, warn);
-            warnConfigSessions.set(phoneNumber, { step: 'matrix', group });
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *PHRASES_PRUNED* █▓▒░\n\n` +
-                `   ✦ *REMOVED* :: ${wIdxs.length}\n` +
-                `   ✦ *LEFT* :: ${phrases.length}`
-            ), msg);
-            return;
-        }
-        const adSess = antiConfigSessions.get(phoneNumber);
-        if (adSess?.step === 'delete') {
-            const ad = getAntideleteState(phoneNumber);
-            const { rows } = listAntideleteEndpoints(ad);
-            const adIdxs = args.map(a => parseInt(a, 10)).filter(n => Number.isFinite(n) && n >= 1 && n <= rows.length).sort((a, b) => b - a);
-            if (!adIdxs.length) {
-                await safeWaReply(sock, remoteJid, '❌ Invalid indices. use: .del 2 5 6 9 (numbers from the antidelete list)', msg);
-                return;
-            }
-            for (const i of adIdxs) {
-                const entry = rows[i - 1];
-                const bucketName = entry.type.toLowerCase() + 's';
-                const bucket = ad.endpoints[bucketName] || [];
-                const j = bucket.indexOf(entry.v);
-                if (j >= 0) bucket.splice(j, 1);
-            }
-            saveAntideleteState(phoneNumber, ad);
-            antiConfigSessions.delete(phoneNumber);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *ENDPOINTS_PRUNED* █▓▒░\n\n` +
-                `   ✦ *REMOVED* :: ${adIdxs.length}\n\n` +
-                `   " Those chats are no longer\n     watched for deletions. "`
-            ), msg);
-            return;
-        }
-        const cfg = botConfig.autoreact || { enabled: false, endpoints: { groups: [], channels: [], contacts: [] } };
-        const all = [...(cfg.endpoints?.groups||[]).map(e=>({type:'GROUP',v:e})), ...(cfg.endpoints?.channels||[]).map(e=>({type:'CHANNEL',v:e})), ...(cfg.endpoints?.contacts||[]).map(e=>({type:'CONTACT',v:e}))];
-        const idxs = args.map(a => parseInt(a,10)).filter(n => Number.isFinite(n) && n >= 1 && n <= all.length).sort((a,b)=>b-a);
-        if (!idxs.length) {
-            await safeWaReply(sock, remoteJid, '❌ Invalid indices. use: .del 2 5 6 9 (numbers from the list)', msg);
-            return;
-        }
-        for (const i of idxs) {
-            const entry = all[i-1];
-            const bucket = cfg.endpoints[entry.type.toLowerCase()+'s'] || [];
-            const j = bucket.indexOf(entry.v);
-            if (j >= 0) bucket.splice(j,1);
-        }
-        saveBotConfig(phoneNumber, botConfig);
-        autoreactSessions.delete(phoneNumber);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *ENDPOINTS_PRUNED* █▓▒░\n\n` +
-            `   ✦ *REMOVED* :: ${idxs.length}\n\n` +
-            `   " The void no longer\n     watches those paths. "`
-        ), msg);
         return;
     }
 
