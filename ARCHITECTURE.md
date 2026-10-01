@@ -50,6 +50,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `src/telegram/commands.js` — Telegram bot command surface: /start, /pair, pairing-number text intake, /status, /unbug, /disconnect, and /help
 - `src/personas/ruin-interface.js` — Ruin persona status panel, command-index, and category-menu rendering plus the `.menu` status-panel/poll send (the shared poll-vote dispatcher that routes votes to these builders stays in index.js)
+- `src/personas/eclipse-interface.js` — Eclipse persona cinematic 3-stage loading animation, banner image send, and Owners/Group/Fun/Bug poll send (`sendEclipseMenu`); accepts `groupChannelLink` and a precomputed `menuBannerPath` as injected dependencies rather than recomputing shared/`__dirname`-based constants itself. The shared `GROUP_CHANNEL_LINK`/`attachChannelPreview`/`channelContextInfo`/`CHANNEL_PREVIEW_*` constants and the `OWNERS_MENU_PATH`/`GROUP_MENU_PATH`/`FUN_MENU_PATH`/`SYSTEM_MENU_PATH`/`CONFIG_MENU_PATH` sibling paths stay in index.js (used elsewhere by `safeWaReply` and `handleMenuVote`). The poll-vote dispatcher (`handleMenuVote`) stays in index.js.
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
 
