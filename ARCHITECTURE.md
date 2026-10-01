@@ -13,6 +13,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/whatsapp/pairing.js` — Telegram/web pairing and startup restoration coordinator
 - `src/whatsapp/socket.js` — socket construction, send tracing, credential persistence, and bulk shutdown
 - `src/whatsapp/reconnection.js` — disconnect cleanup, bounded retries, and non-destructive 428 recovery
+- `src/whatsapp/connection-events.js` — pairing, open/ready, notification, and close-event routing
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
@@ -26,8 +27,8 @@ imports and makes modules independently testable.
 ## Migration order
 
 1. Core configuration, logging and state (complete)
-2. Pairing and session lifecycle (in progress)
-3. Incoming message pipeline
+2. Pairing and session lifecycle (complete)
+3. Incoming message pipeline (next)
 4. Command registry and simple system commands
 5. Commands migrated one category at a time
 6. Web and Telegram adapters

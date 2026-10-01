@@ -50,6 +50,7 @@ import { createEnvironmentConfig } from './src/config/env.js';
 import { createPairingService } from './src/whatsapp/pairing.js';
 import { createSocketService } from './src/whatsapp/socket.js';
 import { createReconnectionService } from './src/whatsapp/reconnection.js';
+import { createConnectionEventService } from './src/whatsapp/connection-events.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3115,305 +3116,45 @@ const {
     restartSocketAfterClose
 } = reconnectionService;
 
+const connectionEventService = createConnectionEventService({
+    rootDir: __dirname,
+    disconnectReason: DisconnectReason,
+    waSessions,
+    reconnectAttempts,
+    connectionClosed428s: connClosed428s,
+    webPairSessions,
+    personaPollKeys,
+    personaPollQuestion: PERSONA_POLL_QUESTION,
+    personaPollOptions: PERSONA_POLL_OPTIONS,
+    personaPollIds: PERSONA_POLL_IDS,
+    getDisconnectCode,
+    setTelegramUserState,
+    saveUserMap,
+    safeTgSend,
+    startPresenceCycle,
+    isSupabaseEnabled,
+    debouncedSyncLocalToSupabase,
+    loadBotConfig,
+    saveBotConfig,
+    sendMenuPoll,
+    truncateCommitName,
+    cleanupDisconnectedSession,
+    handleConnectionClosed428,
+    restartSocketAfterClose,
+    delay,
+    log,
+    logError
+});
+
 function setupSocketEvents(sock, phoneNumber, tgId, authDir, version, isRestore) {
-    let pairingCodeSentForThisSocket = false;
-
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update || {};
-        const code = getDisconnectCode(lastDisconnect);
-        const registered = !!sock?.authState?.creds?.registered;
-
-        log('CONNECTION', `${phoneNumber}: connection.update connection=${connection || 'unknown'} code=${code ?? 'none'} registered=${registered} restore=${isRestore}`);
-
-        if (connection === 'connecting' && !isRestore && !registered && !pairingCodeSentForThisSocket) {
-            pairingCodeSentForThisSocket = true;
-            try {
-                if (tgId !== null && typeof tgId !== 'undefined') {
-                    setTelegramUserState(tgId, { phoneNumber, status: 'pairing', sock });
-                    saveUserMap();
-                }
-
-                await delay(2000);
-                log('PAIR', `${phoneNumber}: requesting pairing code now...`);
-                const pairingCode = await sock.requestPairingCode(phoneNumber);
-                log('PAIR', `${phoneNumber}: pairing code generated successfully: ${pairingCode}`);
-
-                // 💻 Store the code for the web pairing page (and any Telegram chat).
-                webPairSessions.set(phoneNumber, { code: pairingCode, status: 'waiting', createdAt: Date.now() });
-
-                if (tgId !== null && typeof tgId !== 'undefined') {
-                    await safeTgSend(
-                        tgId,
-                        `🔓 *PAIRING CODE*\n\nCode: ${pairingCode}\n\n📋 *Steps:*\n1. WhatsApp → Settings → Linked Devices\n2. Tap "Link a Device"\n3. Tap "Link with phone number"\n4. Enter this code: ${pairingCode}\n\n⚠️ This code expires quickly, so use it now.`
-                    );
-                }
-            } catch (err) {
-                pairingCodeSentForThisSocket = false;
-                logError('PAIR', `${phoneNumber}: failed to request pairing code`, err);
-                if (tgId !== null && typeof tgId !== 'undefined') {
-                    await safeTgSend(tgId, `❌ Failed to generate pairing code.\n\n${err.message}\n\nUse /pair to retry.`);
-                }
-            }
-            return;
-        }
-
-        if (connection === 'open') {
-            log('CONNECTION', `${phoneNumber}: connection opened successfully.`);
-
-            // Reset reconnection counter on successful open
-            reconnectAttempts.set(phoneNumber, 0);
-
-            // Initialize the session in map, allowSupabaseSync as false
-            const sessionObj = {
-                telegramChatId: tgId ?? null,
-                sock,
-                authDir,
-                allowSupabaseSync: false
-            };
-            waSessions.set(phoneNumber, sessionObj);
-
-            // 🎭 Start the random online/offline presence cycle (looks human,
-            // less like a 24/7 server). Commands flash it online ~5 min.
-            setTimeout(() => startPresenceCycle(sock, phoneNumber), 4000);
-
-            if (tgId !== null && typeof tgId !== 'undefined') {
-                setTelegramUserState(tgId, { phoneNumber, status: 'connected', sock });
-                saveUserMap();
-                await safeTgSend(
-                    tgId,
-                    `✅✅✅ *Connected!* ✅✅✅\n\n📱 ${phoneNumber}\n🤖 Bot active now.\n\nType .menu in WhatsApp.`
-                );
-            }
-
-            // Delay initial Supabase sync until exactly 10 seconds after connection open
-            setTimeout(async () => {
-                const currentSession = waSessions.get(phoneNumber);
-                if (currentSession) {
-                    currentSession.allowSupabaseSync = true;
-                    if (isSupabaseEnabled()) {
-                        log('SUPABASE', `${phoneNumber}: Connection open for 10 seconds. Triggering first cloud sync...`);
-                        debouncedSyncLocalToSupabase(phoneNumber, authDir, 100);
-                    }
-                }
-            }, 10000);
-
-            // 🎉 WELCOME DMs — FIRST PAIRING ONLY. Gated by a persisted
-            // per-session flag (bootDmSent) so reconnects NEVER spam these
-            // two messages again. Each newly paired session sends them once.
-            setTimeout(async () => {
-                try {
-                    const myJid = sock?.authState?.creds?.me?.id;
-                    if (!myJid) return;
-
-                    const cfg = loadBotConfig(phoneNumber);
-                    if (cfg.bootDmSent) {
-                        log('SELF', `${phoneNumber}: Boot DMs already sent — skipping (reconnect).`);
-                        return;
-                    }
-
-                    const selfJid = `${myJid.split(':')[0]}@s.whatsapp.net`;
-                    log('SELF', `${phoneNumber}: First pairing detected — sending welcome + persona poll...`);
-
-                    // Message 1 — short welcome
-                    await sock.sendMessage(selfJid, { text: 'eventide omega connected — pick your persona below, then type .menu to begin' });
-
-                    // Message 2 — persona poll (eclipse / ruin). The choice is
-                    // saved into bot_config.json so it survives restarts on
-                    // both Render (Supabase sync) and the panel (local disk).
-                    try {
-                        const pollMsg = await sendMenuPoll(sock, selfJid, phoneNumber, PERSONA_POLL_QUESTION, PERSONA_POLL_OPTIONS, PERSONA_POLL_IDS);
-                        if (pollMsg?.key) personaPollKeys.set(phoneNumber, pollMsg.key);
-                        log('SELF', `${phoneNumber}: persona poll sent (${pollMsg?.key?.id || '?'}).`);
-                    } catch (err) {
-                        logError('PERSONA', `${phoneNumber}: failed to send persona poll`, err);
-                    }
-
-                    cfg.bootDmSent = true;
-                    saveBotConfig(phoneNumber, cfg);
-
-                    log('SELF', `${phoneNumber}: Welcome + persona poll sent and flag persisted.`);
-                } catch (err) {
-                    logError('SELF', `${phoneNumber}: failed to send boot DMs`, err);
-                }
-            }, 5000);
-
-            // 📣 DEPLOY NOTICE — status DMs on WhatsApp, never just logs.
-            // Sources, in order:
-            //   1) BOOT_STATUS.txt — written by boot.js on every panel restart
-            //      (deployed | latest | skipped). One-shot: read + deleted here,
-            //      then DM'd to the owner on WhatsApp.
-            //   2) CURRENT_COMMIT.txt change (Render redeploys, etc.) — the
-            //      classic DEPLOY COMPLETE DM, gated by lastDeployNotifiedCommit
-            //      so reconnects never re-spam.
-            try {
-                const deployMyJid = sock?.authState?.creds?.me?.id;
-                if (deployMyJid) {
-                    const deploySelfJid = `${deployMyJid.split(':')[0]}@s.whatsapp.net`;
-                    const bootStatusPath = path.join(__dirname, 'BOOT_STATUS.txt');
-                    let bootStatus = null;
-                    if (fs.existsSync(bootStatusPath)) {
-                        try {
-                            const raw = fs.readFileSync(bootStatusPath, 'utf8').trim();
-                            fs.unlinkSync(bootStatusPath); // one-shot per boot
-                            if (raw) {
-                                const parts = raw.split('|');
-                                bootStatus = { kind: parts[0] || '', hash: parts[1] || '', name: parts.slice(2).join('|') || '' };
-                            }
-                        } catch (_) {}
-                    }
-
-                    if (bootStatus && bootStatus.kind === 'deployed') {
-                        await sock.sendMessage(deploySelfJid, {
-                            text: `🔄 *PANEL RESTART — NEW COMMIT DEPLOYED*\n\n` +
-                                `   "${truncateCommitName(bootStatus.name)}"\n` +
-                                `   (${(bootStatus.hash || '').slice(0, 7)})\n\n` +
-                                `✅ eventide omega is online\n` +
-                                `⚡ ready — type *.ping* to test.\n\n` +
-                                `   " the void rebuilt itself\n     and it is faster now. "`
-                        }).catch(() => {});
-                        log('DEPLOY', `${phoneNumber}: panel-restart deploy DM sent (${bootStatus.name}).`);
-                    } else if (bootStatus && bootStatus.kind === 'latest') {
-                        await sock.sendMessage(deploySelfJid, {
-                            text: `✅ *PANEL RESTART — ALREADY LATEST*\n\n` +
-                                `   "${truncateCommitName(bootStatus.name)}"\n` +
-                                `   (${(bootStatus.hash || '').slice(0, 7)})\n\n` +
-                                `⚡ online — type *.ping* to test.`
-                        }).catch(() => {});
-                        log('DEPLOY', `${phoneNumber}: panel-restart already-latest DM sent (${bootStatus.name}).`);
-                    } else {
-                        // no boot-sync result (Render path) — classic commit-change DM
-                        const runCommit = (() => {
-                            try {
-                                const c = fs.readFileSync(path.join(__dirname, 'CURRENT_COMMIT.txt'), 'utf8').trim();
-                                return c ? c.split(' ')[0] : '';
-                            } catch (_) { return ''; }
-                        })();
-                        if (runCommit) {
-                            const dc = loadBotConfig(phoneNumber);
-                            if (dc.lastDeployNotifiedCommit !== runCommit) {
-                                dc.lastDeployNotifiedCommit = runCommit;
-                                saveBotConfig(phoneNumber, dc);
-                                await sock.sendMessage(deploySelfJid, {
-                                    text: `🔄 *DEPLOY COMPLETE*\n\n` +
-                                        `✅ eventide omega is online\n` +
-                                        `📦 commit: ${runCommit.slice(0, 7)}\n\n` +
-                                        `⚡ ready — type *.ping* to test.\n\n` +
-                                        `   " the void rebuilt itself\n     and it is faster now. "`
-                                }).catch(() => {});
-                                log('DEPLOY', `${phoneNumber}: deploy notice DM sent for commit ${runCommit}`);
-                            }
-                        }
-                    }
-                }
-            } catch (err) {
-                logError('DEPLOY', `${phoneNumber}: deploy notice failed`, err);
-            }
-
-            // ⚠️ 428 NOTICE — after reconnecting from connectionClosed, DM the
-            // owner (max once per 30 min) with the likely cause so it never
-            // stays a mystery in the logs.
-            try {
-                const st428 = connClosed428s.get(phoneNumber);
-                const myJid428 = sock?.authState?.creds?.me?.id;
-                if (st428 && st428.count > 0 && myJid428 && Date.now() - (st428.lastNotifiedAt || 0) > 30 * 60 * 1000) {
-                    st428.lastNotifiedAt = Date.now();
-                    connClosed428s.set(phoneNumber, st428);
-                    const selfJid428 = `${myJid428.split(':')[0]}@s.whatsapp.net`;
-                    await sock.sendMessage(selfJid428, {
-                        text: `⚠️ *CONNECTION NOTICE (428)*\n\n` +
-                            `WhatsApp closed my connection\n` +
-                            `${st428.count}x recently.\n\n` +
-                            `That usually means this number\n` +
-                            `is linked in TWO places at once\n` +
-                            `(e.g. Render + panel both on).\n\n` +
-                            `If both are running, stop one —\n` +
-                            `they fight each other forever.\n\n` +
-                            `   " one body, one vessel. "`
-                    }).catch(() => {});
-                    log('SOCKET', `${phoneNumber}: 428 owner notice DM sent (${st428.count} closes).`);
-                }
-            } catch (_) {}
-
-            // 📡 READY MARKER — this is the log line that says the bot is
-            // responding NOW. Watch for it after every deploy/restart.
-            log('READY', `${phoneNumber}: ⚡ SESSION READY — the bot is responding now. Type .ping in WhatsApp to confirm.`);
-            return;
-        }
-
-        if (connection === 'close') {
-            log('CONNECTION', `${phoneNumber}: connection closed. Status code=${code ?? 'unknown'}`);
-
-            if (code === 500) {
-                await cleanupDisconnectedSession({
-                    phoneNumber,
-                    tgId,
-                    authDir,
-                    removeAuthDir: true,
-                    reason: 'bad session (500)',
-                    notifyText: `⚠️ *Session Error!*\n\n📱 ${phoneNumber}\nThis session became invalid and has been deleted. Use /pair again.`
-                });
-                return;
-            }
-
-            if (code === DisconnectReason.loggedOut) {
-                await cleanupDisconnectedSession({
-                    phoneNumber,
-                    tgId,
-                    authDir,
-                    removeAuthDir: true,
-                    reason: 'logged out',
-                    notifyText: `📱 *Logged Out!*\n\n📱 ${phoneNumber}\nThis session was logged out from WhatsApp. Credentials have been removed from Supabase. Use /pair to reconnect.`
-                });
-                return;
-            }
-
-    if (code === 515) {
-        await restartSocketAfterClose({
-            closingSock: sock,
-            phoneNumber,
-            tgId,
-            authDir,
-            version,
-            isRestore,
-            reason: 'Baileys requested new socket (515)',
-            delayMs: 3000
-        });
-        return;
-    }
-
-    // ⚠️ 428 = connectionClosed — WhatsApp itself closed the link.
-    // This is NOT a broken session: credentials are perfectly fine, so the
-    // session must NEVER be deleted for it. The usual causes:
-    //   • the same number is linked/running in TWO places at once
-    //     (e.g. Render + panel both online — they kick each other forever)
-    //   • a network blip / WhatsApp server-side reset
-    // Handling: reconnect with a FRESH WhatsApp Web version (version drift is
-    // a known 428 trigger), jittered delay, storm backoff, and a one-time
-    // WhatsApp DM to the owner explaining the likely cause. Never counts
-    // against the max-reconnect budget that deletes sessions.
-    if (code === DisconnectReason.connectionClosed) {
-        await handleConnectionClosed428({
-            sock,
-            phoneNumber,
-            tgId,
-            authDir,
-            isRestore
-        });
-        return;
-    }
-
-    await restartSocketAfterClose({
-                closingSock: sock,
-                phoneNumber,
-                tgId,
-                authDir,
-                version,
-                isRestore,
-                reason: `connection closed (${code ?? 'unknown'})`,
-                delayMs: 5000
-            });
-        }
-    });
+    return connectionEventService.setupSocketEvents(
+        sock,
+        phoneNumber,
+        tgId,
+        authDir,
+        version,
+        isRestore
+    );
 }
 
 // ──────────────────────────────────────────────
