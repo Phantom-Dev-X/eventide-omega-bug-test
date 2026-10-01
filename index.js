@@ -4340,6 +4340,57 @@ async function deleteMenuMessages(sock, replyKey) {
     menuReplyMessages.delete(replyKey);
 }
 
+// 🧪 Shared bug-menu text builder — used by BOTH the .bugmenu command and the
+// menu-poll "BUG MENU" vote, so they always send the exact same reply.
+function buildBugMenuText(prefix = '.') {
+    const date = new Date();
+    const uptimeSeconds = Math.floor(process.uptime());
+    const hours = Math.floor(uptimeSeconds / 3600);
+    const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+    const seconds = uptimeSeconds % 60;
+    const menuText = [
+            '╭┈〔 *𝙸𝙽𝙵𝙾 𝙱𝙾𝚃* 〕',
+            '┆𖤍╭────↯',
+            `┃𖤍│➣ *𝙿𝚁𝙴𝙵𝙸𝚇:* ${prefix}`,
+            `┃𖤍│➣ *𝙳𝙰𝚃𝙴:* ${date.toLocaleDateString('en-GB')}`,
+            `┃𖤍│➣ *ᴜᴘᴛɪᴍᴇ*: ${hours}h ${minutes}m ${seconds}s`,
+            `┃𖤍│➣ *𝚁𝚄𝙽𝚃𝙸𝙼𝙴:* ${process.version}`,
+            `┃𖤍│➣ *𝙼𝙾𝙳𝙴:* ${currentMode}`,
+            '┆𖤍╰────↯',
+            '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
+            '',
+            '╭┈〔 *Eventides-omega-𝙱𝚄𝙶 menu* 〕',
+            '┆𖤍╭────↯',
+            '┃𖤍│ ᖫ *𝙰𝙽𝙳𝚁𝙾𝙸𝙳* ᖭ',
+            '┃𖤍│ ╰━➤ *`𝙲𝚁𝙰𝚂𝙷`*',
+            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗵𝗮𝗿𝗱* <num>',
+            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗼𝗼𝗺* <num>',
+            '┃𖤍│',
+            '┃𖤍│ ᖫ *𝙸𝙾𝚂* ᖭ',
+            '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷 / 𝙵𝚁𝙴𝙴𝚉𝙴`*',
+            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀* <num>',
+            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀𝗱* <num>',
+            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗶𝗼𝘀* <num> ',
+            '┃𖤍│➣ *.𝗶𝗼𝘀-𝘇𝗸* <num> — ×60 loc/mention bomb',
+            '┃𖤍│',
+            '┃𖤍│ ᖫ *𝙷𝚈𝙱𝚁𝙸𝙳 𝙽𝚄𝙺𝙴* ᖭ',
+            '┃𖤍│      ╰━➤ *`𝙵𝚅𝙲𝙺𝙱𝙸𝚃𝙲𝙷`*',
+            '┃𖤍│➣ *.𝗮𝗻𝗱𝗿𝗼-𝗻𝘂𝗸𝗲* <num> [rounds] — ×10 per round',
+            '┃𖤍│',
+            '┃𖤍│ ᖫ *𝙶𝚁𝙾𝚄𝙿* ᖭ',
+            '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷𝙲𝙻𝙸𝙲𝙺`*',
+            '┃𖤍│➣ *.𝗴𝗯* yes — in group ×10',
+            '┃𖤍│➣ *.𝗴𝗯* <invite link> — group ×10',
+            '┃𖤍│➣ *.𝗴𝗯-𝗵𝗮𝗿𝗱* <link> — group app-level ×10',
+            '┆𖤍╰────↯',
+            '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
+            '',
+            '> please dont spam to aviod bans, i didnt say dont use, just type the name of the command you wanna use and youll see how to use it',
+            `Main menu: ${prefix}menu`
+        ].join('\n');
+    return menuText;
+}
+
 async function handleMenuVote(sock, remoteJid, phoneNumber, votedOptionId, pollId = '', voterJid = 'me') {
     log('POLL-MENU', `${phoneNumber}: handling vote -> ${votedOptionId} for ${remoteJid}`);
     const replyKey = `${pollId}:${voterJid}`;
@@ -4567,8 +4618,10 @@ async function handleMenuVote(sock, remoteJid, phoneNumber, votedOptionId, pollI
                 break;
             }
             case 'bug': {
-                const bugContent = await attachChannelPreview({ text: formatForWhatsApp(BUG_PLACEHOLDER_TEXT) });
-                const sent = await sock.sendMessage(remoteJid, bugContent);
+                // Same reply as the .bugmenu command — the shared builder
+                // keeps command list and poll vote perfectly in sync.
+                const bugPrefix = String(loadBotConfig(phoneNumber)?.prefix || '.');
+                const sent = await sock.sendMessage(remoteJid, { text: buildBugMenuText(bugPrefix) });
                 if (sent?.key) recordMenuMessage(replyKey, sent.key);
                 break;
             }
@@ -6122,51 +6175,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // 🧪 Bug menu — lists the TEMPORARY antibug test commands (test build).
     // token has already been normalized for the configured prefix above.
     if (['.bugmenu', '.bug-menu', '.bugmemu'].includes(token)) {
-        const date = new Date();
-        const uptimeSeconds = Math.floor(process.uptime());
-        const hours = Math.floor(uptimeSeconds / 3600);
-        const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-        const seconds = uptimeSeconds % 60;
-        const menuText = [
-            '╭┈〔 *𝙸𝙽𝙵𝙾 𝙱𝙾𝚃* 〕',
-            '┆𖤍╭────↯',
-            `┃𖤍│➣ *𝙿𝚁𝙴𝙵𝙸𝚇:* ${prefix}`,
-            `┃𖤍│➣ *𝙳𝙰𝚃𝙴:* ${date.toLocaleDateString('en-GB')}`,
-            `┃𖤍│➣ *ᴜᴘᴛɪᴍᴇ*: ${hours}h ${minutes}m ${seconds}s`,
-            `┃𖤍│➣ *𝚁𝚄𝙽𝚃𝙸𝙼𝙴:* ${process.version}`,
-            `┃𖤍│➣ *𝙼𝙾𝙳𝙴:* ${currentMode}`,
-            '┆𖤍╰────↯',
-            '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
-            '',
-            '╭┈〔 *Eventides-omega-𝙱𝚄𝙶 menu* 〕',
-            '┆𖤍╭────↯',
-            '┃𖤍│ ᖫ *𝙰𝙽𝙳𝚁𝙾𝙸𝙳* ᖭ',
-            '┃𖤍│ ╰━➤ *`𝙲𝚁𝙰𝚂𝙷`*',
-            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗵𝗮𝗿𝗱* <num>',
-            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗼𝗼𝗺* <num>',
-            '┃𖤍│',
-            '┃𖤍│ ᖫ *𝙸𝙾𝚂* ᖭ',
-            '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷 / 𝙵𝚁𝙴𝙴𝚉𝙴`*',
-            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀* <num>',
-            '┃𖤍│➣ *.𝗰𝗿𝗮𝘀𝗵-𝗶𝗼𝘀𝗱* <num>',
-            '┃𖤍│➣ *.𝗳𝗿𝘇-𝗶𝗼𝘀* <num> ',
-            '┃𖤍│➣ *.𝗶𝗼𝘀-𝘇𝗸* <num> — ×60 loc/mention bomb',
-            '┃𖤍│',
-            '┃𖤍│ ᖫ *𝙷𝚈𝙱𝚁𝙸𝙳 𝙽𝚄𝙺𝙴* ᖭ',
-            '┃𖤍│      ╰━➤ *`𝙵𝚅𝙲𝙺𝙱𝙸𝚃𝙲𝙷`*',
-            '┃𖤍│➣ *.𝗮𝗻𝗱𝗿𝗼-𝗻𝘂𝗸𝗲* <num> [rounds] — ×10 per round',
-            '┃𖤍│',
-            '┃𖤍│ ᖫ *𝙶𝚁𝙾𝚄𝙿* ᖭ',
-            '┃𖤍│      ╰━➤ *`𝙲𝚁𝙰𝚂𝙷𝙲𝙻𝙸𝙲𝙺`*',
-            '┃𖤍│➣ *.𝗴𝗯* yes — in group ×10',
-            '┃𖤍│➣ *.𝗴𝗯* <invite link> — group ×10',
-            '┃𖤍│➣ *.𝗴𝗯-𝗵𝗮𝗿𝗱* <link> — group app-level ×10',
-            '┆𖤍╰────↯',
-            '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
-            '',
-            '> please dont spam to aviod bans, i didnt say dont use, just type the name of the command you wanna use and youll see how to use it',
-            `Main menu: ${prefix}menu`
-        ].join('\n');
+        const menuText = buildBugMenuText(prefix);
 
         try {
             // A failed reaction should not prevent the actual menu reply.
