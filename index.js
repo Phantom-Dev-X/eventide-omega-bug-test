@@ -76,6 +76,7 @@ import { createConfigDeleteCommands } from './src/commands/system/config-delete.
 import { createHelpCommands } from './src/commands/system/help.js';
 import { createAiFunCommands } from './src/commands/fun/ai.js';
 import { createTicTacToeCommands } from './src/commands/game/tic-tac-toe.js';
+import { createOneShotProbeService } from './src/commands/testing/one-shot-probes.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3271,6 +3272,17 @@ const messageConfigInputService = createMessageConfigInputService({
     buildOmegaTerminal
 });
 
+const oneShotProbeService = createOneShotProbeService({
+    normalizeJid: jidNormalizedUser,
+    isDevNumber,
+    safeWaReply,
+    sendIozkProbe,
+    sendFiosProbe,
+    recordBugSends,
+    log,
+    logError
+});
+
 const commandRegistry = createCommandRegistry([
     ...createBasicSystemCommands({
         safeWaReply,
@@ -4792,134 +4804,22 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         recent
     } = incoming;
 
-    // 🧪 TEMPORARY `.crash-ios <number>` — IOZK probe (delete with the other test
-    // commands when antibug testing ends). Owner/dev only, works from any chat.
-    // Intercept before reactions and other command side effects.
+    // Temporary one-shot test probes must remain ahead of reactions and all
+    // normal command side effects. Flood variants below share this parse.
     const parsed = extractMessageText(msg);
     const cisWords = String(parsed.text || '').trim().split(/\s+/);
     const cisFirstWord = (cisWords[0] || '').toLowerCase();
     const cisPrefix = String(loadBotConfig(phoneNumber)?.prefix || '.').toLowerCase();
-    const isCisCommand = cisFirstWord === '.crash-ios' || cisFirstWord === `${cisPrefix}crash-ios`;
-    if (isCisCommand) {
-        const cisSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const cisIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(cisSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!cisIsOwner && !isDevNumber(cisSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        if (cisWords.length > 2) {
-            await safeWaReply(sock, remoteJid, '⚠️ .crash-ios is a one-shot — no amount needed. For floods use .crash-iosd <number> <amount>.', msg);
-            return;
-        }
-
-        const targetInput = cisWords.slice(1).join(' ').trim();
-        const targetNumber = targetInput.replace(/\D/g, '');
-        if (!/^\+?[\d\s-]+$/.test(targetInput) || targetNumber.length < 8 || targetNumber.length > 15) {
-            await safeWaReply(sock, remoteJid, 'Usage: .crash-ios <number>', msg);
-            return;
-        }
-
-        // Safety: the bot's OWN number can never be a target — firing at it
-        // would bomb the bot's own phone by mistake.
-        const botNum = String(phoneNumber || '').replace(/\D/g, '')
-            || (sock.user?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        if (targetNumber === botNum) {
-            await safeWaReply(sock, remoteJid, '❌ Cannot target the bot\'s own number — that would hit the bot phone itself.', msg);
-            return;
-        }
-
-        // TEMPORARY TEST COMMAND (.cis) — target gates removed for the testing
-        // phase (registered list + one-shot lock). Owner/dev and number-format
-        // checks remain. Works from any chat; target may be any real WhatsApp
-        // number, including the bot's own number. Delete this whole block when
-        // antibug testing ends.
-        const targetJid = `${targetNumber}@s.whatsapp.net`;
-        try {
-            const [waCheck] = await sock.onWhatsApp(targetJid);
-            if (!waCheck?.exists) {
-                await safeWaReply(sock, remoteJid, `❌ Test number has no account: ${targetNumber}`, msg);
-                return;
-            }
-        } catch (_) { /* If lookup is unavailable on the test transport, try the one send. */ }
-
-        await safeWaReply(sock, remoteJid, `⏳ .crash-ios sending → ${targetNumber}…`, msg);
-        try {
-            const result = await sendIozkProbe(sock, targetJid);
-            recordBugSends(phoneNumber, targetJid, result?.ids || []);
-            log('CIS', `${phoneNumber}: IOZK probe sent to test target ${targetNumber}; ${JSON.stringify(result)}`);
-            await safeWaReply(sock, remoteJid, `🧪 .crash-ios probe sent to ${targetNumber}.`, msg);
-        } catch (err) {
-            logError('CIS', `${phoneNumber}: IOZK probe failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ .crash-ios send failed: ${err?.message || err}`, msg);
-        }
-        return;
-    }
-
-    // 🧪 TEMPORARY `.frz-ios <number>` — F_OS probe (delete with the other test
-    // commands when antibug testing ends). Owner/dev only, works from any chat.
-    const isFisCommand = cisFirstWord === '.frz-ios' || cisFirstWord === `${cisPrefix}frz-ios`;
-    if (isFisCommand) {
-        const fisSenderJid = msg.key?.participant || msg.key?.remoteJid || '';
-        const fisIsOwner = fromMe || (
-            !!sock.user?.id &&
-            jidNormalizedUser(fisSenderJid) === jidNormalizedUser(sock.user.id)
-        );
-        if (!fisIsOwner && !isDevNumber(fisSenderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner/dev only.', msg);
-            return;
-        }
-
-        if (cisWords.length > 2) {
-            await safeWaReply(sock, remoteJid, '⚠️ .frz-ios is a one-shot — no amount needed. For floods use .frz-iosd <number> <amount>.', msg);
-            return;
-        }
-
-        const targetInput = cisWords.slice(1).join(' ').trim();
-        const targetNumber = targetInput.replace(/\D/g, '');
-        if (!/^\+?[\d\s-]+$/.test(targetInput) || targetNumber.length < 8 || targetNumber.length > 15) {
-            await safeWaReply(sock, remoteJid, 'Usage: .frz-ios <number>', msg);
-            return;
-        }
-
-        // Safety: the bot's OWN number can never be a target — firing at it
-        // would bomb the bot's own phone by mistake.
-        const botNum = String(phoneNumber || '').replace(/\D/g, '')
-            || (sock.user?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        if (targetNumber === botNum) {
-            await safeWaReply(sock, remoteJid, '❌ Cannot target the bot\'s own number — that would hit the bot phone itself.', msg);
-            return;
-        }
-
-        // TEMPORARY TEST COMMAND (.fis) — target gates removed for the testing
-        // phase (registered list + one-shot lock). Owner/dev and number-format
-        // checks remain. Works from any chat; target may be any real WhatsApp
-        // number, including the bot's own number. Delete this whole block when
-        // antibug testing ends.
-        const targetJid = `${targetNumber}@s.whatsapp.net`;
-        try {
-            const [waCheck] = await sock.onWhatsApp(targetJid);
-            if (!waCheck?.exists) {
-                await safeWaReply(sock, remoteJid, `❌ Test number has no account: ${targetNumber}`, msg);
-                return;
-            }
-        } catch (_) { /* If lookup is unavailable on the test transport, try the one send. */ }
-
-        await safeWaReply(sock, remoteJid, `⏳ .frz-ios sending → ${targetNumber}…`, msg);
-        try {
-            const result = await sendFiosProbe(sock, targetJid);
-            recordBugSends(phoneNumber, targetJid, result?.ids || []);
-            log('FIS', `${phoneNumber}: F_OS probe sent to test target ${targetNumber}; ${JSON.stringify(result)}`);
-            await safeWaReply(sock, remoteJid, `🧪 .frz-ios probe sent to ${targetNumber}.`, msg);
-        } catch (err) {
-            logError('FIS', `${phoneNumber}: F_OS probe failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ .frz-ios send failed: ${err?.message || err}`, msg);
-        }
-        return;
-    }
+    if (await oneShotProbeService.handle({
+        sock,
+        message: msg,
+        phoneNumber,
+        remoteJid,
+        fromMe,
+        words: cisWords,
+        firstWord: cisFirstWord,
+        prefix: cisPrefix
+    })) return;
 
     // 🧪 TEMPORARY `.crash-iosd <number> <amount>` / `.frz-iosd <number> <amount>` —
     // flood versions of the .crash-ios/.frz-ios one-shot probes (IOZK / F_OS payloads).

@@ -39,6 +39,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/help.js` — antibug menu and persona-aware AI help oracle with timed help mode
 - `src/commands/fun/ai.js` — scored AI roast, pickup, joke, compliment, flirt, rate, and ship commands
 - `src/commands/game/tic-tac-toe.js` — challenge, board, move, bot-mode, and setup-poll routing for the premium arena
+- `src/commands/testing/one-shot-probes.js` — early, owner-gated routing for temporary single-send iOS test probes
 - `src/commands/group/membership.js` — group joining, member changes, invite links, and administrator rank changes
 - `src/commands/group/information.js` — group details, visible and hidden broadcasts, and contact-card exports
 - `src/commands/group/moderation.js` — per-member muting and whole-group lock/unlock controls
