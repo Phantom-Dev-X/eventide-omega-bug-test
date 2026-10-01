@@ -88,6 +88,7 @@ import { createAntideleteService } from './src/moderation/antidelete-service.js'
 import { createAiEngine } from './src/ai/ai-engine.js';
 import { createBugProbeEngine } from './src/testing/bug-probe-engine.js';
 import { createBasicHelpers } from './src/core/basic-helpers.js';
+import { createMessageContent } from './src/whatsapp/message-content.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -774,16 +775,6 @@ function findHidetagTrigger(normalized, prefix, aliases) {
     return { body: [...parts.slice(0, idx), ...parts.slice(idx + 1)].join(' ').trim() };
 }
 
-function getQuotedContext(msg) {
-    const unwrapped = unwrapMessageContent(msg?.message).message || {};
-    return unwrapped.extendedTextMessage?.contextInfo
-        || unwrapped.imageMessage?.contextInfo
-        || unwrapped.videoMessage?.contextInfo
-        || unwrapped.buttonsResponseMessage?.contextInfo
-        || msg.message?.extendedTextMessage?.contextInfo
-        || null;
-}
-
 // ✅ Creator-aware admin check. WhatsApp group metadata sets admin = null for
 // the group CREATOR, so `p.admin` truthiness alone wrongly rejected the owner.
 // This matches by JID (or phone digits when one side is a PN) and treats the
@@ -1071,6 +1062,9 @@ function getStaticHelpAnswer(rawQuestion) {
 }
 
 
+const messageContent = createMessageContent();
+const { getQuotedContext, unwrapMessageContent, extractMessageText } = messageContent;
+
 const basicHelpers = createBasicHelpers({
     logError,
     getQuotedContext,
@@ -1254,101 +1248,6 @@ async function getBaileysVersion() {
 
 function resolveCommandReply(command, phoneNumber) {
     return COMMANDS[command] || null;
-}
-
-function unwrapMessageContent(message) {
-    let current = message;
-    const wrapperChain = [];
-
-    for (let depth = 0; current && depth < 10; depth += 1) {
-        if (current.deviceSentMessage?.message) {
-            wrapperChain.push('deviceSentMessage');
-            current = current.deviceSentMessage.message;
-            continue;
-        }
-        if (current.ephemeralMessage?.message) {
-            wrapperChain.push('ephemeralMessage');
-            current = current.ephemeralMessage.message;
-            continue;
-        }
-        if (current.viewOnceMessage?.message) {
-            wrapperChain.push('viewOnceMessage');
-            current = current.viewOnceMessage.message;
-            continue;
-        }
-        if (current.viewOnceMessageV2?.message) {
-            wrapperChain.push('viewOnceMessageV2');
-            current = current.viewOnceMessageV2.message;
-            continue;
-        }
-        if (current.viewOnceMessageV2Extension?.message) {
-            wrapperChain.push('viewOnceMessageV2Extension');
-            current = current.viewOnceMessageV2Extension.message;
-            continue;
-        }
-        if (current.documentWithCaptionMessage?.message) {
-            wrapperChain.push('documentWithCaptionMessage');
-            current = current.documentWithCaptionMessage.message;
-            continue;
-        }
-        if (current.editedMessage?.message) {
-            wrapperChain.push('editedMessage');
-            current = current.editedMessage.message;
-            continue;
-        }
-        break;
-    }
-
-    return { message: current, wrapperChain };
-}
-
-function extractMessageText(msg) {
-    const topLevelType = msg?.message ? Object.keys(msg.message)[0] : 'none';
-    const { message, wrapperChain } = unwrapMessageContent(msg?.message);
-    const leafType = message ? (Object.keys(message)[0] || 'unknown') : 'none';
-
-    if (!message) {
-        return {
-            text: '',
-            topLevelType,
-            leafType,
-            wrapperChain,
-            source: 'none'
-        };
-    }
-
-    const candidates = [
-        ['conversation', message.conversation],
-        ['extendedTextMessage.text', message.extendedTextMessage?.text],
-        ['imageMessage.caption', message.imageMessage?.caption],
-        ['videoMessage.caption', message.videoMessage?.caption],
-        ['documentMessage.caption', message.documentMessage?.caption],
-        ['buttonsResponseMessage.selectedButtonId', message.buttonsResponseMessage?.selectedButtonId],
-        ['buttonsResponseMessage.selectedDisplayText', message.buttonsResponseMessage?.selectedDisplayText],
-        ['listResponseMessage.title', message.listResponseMessage?.title],
-        ['templateButtonReplyMessage.selectedId', message.templateButtonReplyMessage?.selectedId],
-        ['templateButtonReplyMessage.selectedDisplayText', message.templateButtonReplyMessage?.selectedDisplayText]
-    ];
-
-    for (const [source, value] of candidates) {
-        if (typeof value === 'string' && value.trim()) {
-            return {
-                text: value,
-                topLevelType,
-                leafType,
-                wrapperChain,
-                source
-            };
-        }
-    }
-
-    return {
-        text: '',
-        topLevelType,
-        leafType,
-        wrapperChain,
-        source: 'unhandled'
-    };
 }
 
 /**
