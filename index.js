@@ -65,6 +65,7 @@ import { createAccountToolCommands } from './src/commands/system/account-tools.j
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
+import { createGroupWarningCommands } from './src/commands/group/warnings.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3320,6 +3321,24 @@ const commandRegistry = createCommandRegistry([
         isParticipantAdmin,
         normalizeJid: jidNormalizedUser,
         logError
+    }),
+    ...createGroupWarningCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        isUserGroupAdmin,
+        resolveTargetJid,
+        normalizeJid: jidNormalizedUser,
+        ensureWarnGroup,
+        applyWarn,
+        getUserWarns,
+        setUserWarns,
+        listGroupWarns,
+        getWarnState,
+        autoreactSessions,
+        antiConfigSessions,
+        warnConfigSessions,
+        sendMenuPoll
     })
 ]);
 
@@ -5928,111 +5947,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             const jids = meta.participants.map(p => p.id);
             await sock.sendMessage(remoteJid, { text: args.join(' ').trim() || '‎', mentions: jids });
         } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // ⚠️ WARN SYSTEM
-    if (token === '.warn') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const senderAdmin = isSenderOwner || isDevNumber(senderJid) || await isUserGroupAdmin(sock, remoteJid, senderJid);
-        if (!senderAdmin) { await safeWaReply(sock, remoteJid, '⛔ Group Admin only.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply to their message, @mention them, or pass a number.\nExample: .warn spamming', msg); return; }
-        if (await isUserGroupAdmin(sock, remoteJid, target) || isDevNumber(target)) {
-            await safeWaReply(sock, remoteJid, '❌ You cannot warn an admin.', msg); return;
-        }
-        const reason = args.filter(a => !a.startsWith('@') && !/^\d{7,}$/.test(a.replace(/\D/g, '') === a ? a : '')).join(' ').trim()
-            || args.join(' ').replace(/@\S+/g, '').replace(/\d{7,}/g, '').trim()
-            || 'manual';
-        ensureWarnGroup(phoneNumber, remoteJid);
-        await applyWarn(sock, phoneNumber, {
-            groupJid: remoteJid,
-            targetJid: target,
-            byJid: senderJid,
-            reason,
-            auto: false,
-            originalMsg: null
-        });
-        return;
-    }
-
-    if (token === '.unwarn') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const senderAdmin = isSenderOwner || isDevNumber(senderJid) || await isUserGroupAdmin(sock, remoteJid, senderJid);
-        if (!senderAdmin) { await safeWaReply(sock, remoteJid, '⛔ Group Admin only.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply / @mention / number. Example: .unwarn @user', msg); return; }
-        const rec = getUserWarns(phoneNumber, remoteJid, jidNormalizedUser(target));
-        rec.count = Math.max(0, (rec.count || 0) - 1);
-        if (rec.history?.length) rec.history.pop();
-        setUserWarns(phoneNumber, remoteJid, jidNormalizedUser(target), rec);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *WARN_LIFTED* █▓▒░\n\n` +
-            `   ✦ *TARGET* :: +${target.split('@')[0]}\n` +
-            `   ✦ *STRIKES* :: ${rec.count}\n\n` +
-            `   " One mark fades. "`
-        ), msg);
-        return;
-    }
-
-    if (token === '.warns') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (target) {
-            const rec = getUserWarns(phoneNumber, remoteJid, jidNormalizedUser(target));
-            const hist = (rec.history || []).slice(-5).map(h => `   • ${h.reason} (${h.auto ? 'auto' : 'manual'})`).join('\n') || '   • _clean record_';
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *WARN_DOSSIER* █▓▒░\n\n` +
-                `   ✦ *TARGET* :: +${target.split('@')[0]}\n` +
-                `   ✦ *STRIKES* :: ${rec.count || 0}\n\n${hist}`
-            ), msg);
-            return;
-        }
-        const rows = listGroupWarns(phoneNumber, remoteJid);
-        const list = rows.length
-            ? rows.slice(0, 15).map(([jid, rec], i) => `   [${i + 1}] +${jid.split('@')[0]}  —  ${rec.count}`).join('\n')
-            : '   • _no marks in this group_';
-        const gcfg = getWarnState(phoneNumber).groups[remoteJid];
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *WARN_LEDGER* █▓▒░\n\n` +
-            `   ✦ *POLICY* :: ${gcfg ? (gcfg.enabled ? 'ARMED' : 'IDLE') : 'DEFAULT'}\n` +
-            `   ✦ *MAX* :: ${gcfg?.maxWarns === 0 ? '∞' : (gcfg?.maxWarns || 3)}\n` +
-            `   ✦ *ACTION* :: ${(gcfg?.action || 'kick').toUpperCase()}\n\n${list}`
-        ), msg);
-        return;
-    }
-
-    if (token === '.warnreset') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const senderAdmin = isSenderOwner || isDevNumber(senderJid) || await isUserGroupAdmin(sock, remoteJid, senderJid);
-        if (!senderAdmin) { await safeWaReply(sock, remoteJid, '⛔ Group Admin only.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply / @mention / number to wipe their strikes.', msg); return; }
-        setUserWarns(phoneNumber, remoteJid, jidNormalizedUser(target), { count: 0, history: [] });
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *RECORD_WIPED* █▓▒░\n\n` +
-            `   ✦ *TARGET* :: +${target.split('@')[0]}\n` +
-            `   ✦ *STRIKES* :: 0\n\n` +
-            `   " The slate is clean. "`
-        ), msg);
-        return;
-    }
-
-    if (token === '.warnconfig' || token === '.warncfg') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only.', msg); return; }
-        const warn = getWarnState(phoneNumber);
-        const count = Object.keys(warn.groups || {}).length;
-        autoreactSessions.delete(phoneNumber);
-        antiConfigSessions.delete(phoneNumber);
-        warnConfigSessions.set(phoneNumber, { step: 'root' });
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *WARN_CONFIG_MATRIX* █▓▒░\n\n` +
-            `   ✦ *GROUPS* :: ${count}\n` +
-            `   ✦ *DEFAULT* :: 3 strikes → kick\n\n` +
-            `   Add a group, shape its law,\n` +
-            `   or remove it from the ward.`
-        ), msg);
-        await sendMenuPoll(sock, remoteJid, phoneNumber, '✦ WARN MATRIX ✦', ['➕ Add Group', '⚙️ Configure Group', '🗑️ Remove Group'], ['wn_add', 'wn_cfg', 'wn_remove']);
         return;
     }
 
