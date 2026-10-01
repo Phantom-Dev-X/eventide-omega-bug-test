@@ -48,6 +48,7 @@ import { startLocalBackups, runLocalBackup } from './backup.js';
 import { parseInviteOrJid, listParticipatingGroups, resolveAndJoinTarget } from './wardConfig.js';
 import { createEnvironmentConfig } from './src/config/env.js';
 import { createPairingService } from './src/whatsapp/pairing.js';
+import { createSocketService } from './src/whatsapp/socket.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3053,174 +3054,36 @@ async function requireAdminOrExplain(chatId) {
     return false;
 }
 
-async function stopAllSessions(reason = 'unspecified') {
-    log('SESSION', `Stopping all active sockets. Reason: ${reason}`);
-    for (const [phoneNumber, session] of waSessions.entries()) {
-        try {
-            log('SESSION', `Closing socket for ${phoneNumber}`);
-            await session?.sock?.end(undefined);
-        } catch (err) {
-            logError('SESSION', `Failed to close socket for ${phoneNumber}`, err);
-        }
-    }
-    waSessions.clear();
-    for (const [chatId, user] of telegramUsers.entries()) {
-        telegramUsers.set(chatId, {
-            phoneNumber: user?.phoneNumber || null,
-            status: user?.phoneNumber ? 'connecting' : 'disconnected',
-            sock: null
-        });
-    }
-    saveUserMap();
-}
+const socketService = createSocketService({
+    botRuntimeAllowed: BOT_RUNTIME_ALLOWED,
+    isBlockedRenderService: IS_BLOCKED_RENDER_SERVICE,
+    currentRenderServiceId: CURRENT_RENDER_SERVICE_ID,
+    telegramUsers,
+    waSessions,
+    makeWASocket,
+    makeCacheableSignalKeyStore,
+    createSilentLogger: () => pino({ level: 'silent' }),
+    useMultiFileAuthState,
+    getBaileysVersion,
+    getMessageFromStore,
+    ensureDir,
+    isSupabaseEnabled,
+    downloadSessionFromSupabase,
+    debouncedSyncLocalToSupabase,
+    setTelegramUserState,
+    saveUserMap,
+    setupSocketEvents,
+    setupMessageHandler,
+    log,
+    logError,
+    verboseLogs: VERBOSE_LOGS
+});
+
+const { createSocketForSession, stopAllSessions } = socketService;
 
 // ──────────────────────────────────────────────
 // 🔌 SOCKET / SESSION MANAGEMENT
 // ──────────────────────────────────────────────
-async function createSocketForSession({ phoneNumber, tgId, authDir, version = null, isRestore = false }) {
-    if (!BOT_RUNTIME_ALLOWED) {
-        const reason = IS_BLOCKED_RENDER_SERVICE
-            ? `blocked Render service ${CURRENT_RENDER_SERVICE_ID}`
-            : 'non-Render host';
-        throw new Error(`WhatsApp socket startup is disabled on ${reason}.`);
-    }
-    ensureDir(authDir);
-
-    if (isSupabaseEnabled()) {
-        log('SUPABASE', `${phoneNumber}: Fetching credentials from Supabase before initialization...`);
-        const restored = await downloadSessionFromSupabase(phoneNumber, authDir);
-        if (restored) {
-            log('SUPABASE', `${phoneNumber}: Credentials loaded from Supabase successfully.`);
-        } else {
-            log('SUPABASE', `${phoneNumber}: No credentials found on Supabase or failed to restore.`);
-        }
-    }
-
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    const resolvedVersion = version || await getBaileysVersion();
-
-    const existingUser = tgId !== null && typeof tgId !== 'undefined'
-        ? telegramUsers.get(tgId)
-        : null;
-    const nextStatus = !state?.creds?.registered && !isRestore
-        ? 'pairing'
-        : (existingUser?.status === 'pairing' && !isRestore ? 'pairing' : 'connecting');
-
-    log('SOCKET', `${phoneNumber}: creating socket (registered=${!!state?.creds?.registered}, restore=${isRestore}, tgId=${tgId ?? 'none'})`);
-
-    const sock = makeWASocket({
-        version: resolvedVersion,
-        logger: pino({ level: 'silent' }),
-        auth: {
-            creds: state.creds,
-            // In-memory cache over the file key store. Without it every send
-            // re-reads key files from disk and rewrites the whole session file
-            // per crypto-ratchet step — on Render's slow filesystem that
-            // throttles sends to ~1/sec. Reads now come from RAM.
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
-        },
-        browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
-        printQRInTerminal: false,
-        generateHighQualityLinkPreview: true,
-        syncFullHistory: false,
-        markOnlineOnConnect: false,
-        // Omega-style stability: heartbeat every 15s (fewer idle drops) and
-        // never replay old history on reconnect (no stale-message spam).
-        keepAliveIntervalMs: 15000,
-        shouldSyncHistoryMessage: () => false,
-        getMessage: getMessageFromStore
-    });
-    sock._eventidePhone = phoneNumber; // used by safeWaReply to flash presence
-
-    // 📡 SEND TRACER: log every message this socket sends (id + jid) so you
-    // can match it against the messages.upsert echo. Baileys re-emits the
-    // bot's own sends back into messages.upsert with type='append'.
-    const _origSendMessage = sock.sendMessage.bind(sock);
-    sock.sendMessage = async (jid, content, options) => {
-        // xzcbailz 1.0.6 supports the same `{ react: { text, key } }` input as
-        // Baileys. Keep that shape intact: its generateWAMessageContent()
-        // converts `react` into the protocol-level `reactionMessage` and its
-        // relay path marks the stanza as type="reaction". Passing
-        // `{ reactionMessage }` directly to sendMessage() skips that converter
-        // and can produce an empty/non-rendering message while still resolving.
-        if (content && typeof content === 'object' && content.react?.key) {
-            const rk = content.react.key;
-            const rText = String(content.react.text || '');
-            const rJid = typeof jid === 'string' ? jid : (rk.remoteJid || '');
-            log('WA-REACT', `${phoneNumber}: reacting ${rText || '(empty)'} → ${rJid} (on msg ${rk.id})`);
-            try {
-                const rRes = await _origSendMessage(rJid, {
-                    react: {
-                        ...content.react,
-                        key: rk,
-                        text: rText,
-                        senderTimestampMs: content.react.senderTimestampMs || Date.now()
-                    }
-                }, options || {});
-                log('WA-REACT', `${phoneNumber}: reaction sent (id=${rRes?.key?.id || '?'})`);
-                return rRes;
-            } catch (err) {
-                logError('WA-REACT', `${phoneNumber}: reaction failed`, err);
-                throw err;
-            }
-        }
-        // Do not inject poll metadata here. xzcbailz 1.0.6's relayMessage()
-        // already detects pollCreationMessage/V2/V3 and appends exactly one
-        // `<meta polltype="creation">` node. The old compatibility shim added
-        // a second identical node through options.additionalNodes; WhatsApp
-        // silently discarded those malformed poll stanzas even though the
-        // local send promise resolved.
-        const res = await _origSendMessage(jid, content, options);
-        const toJid = typeof jid === 'string' ? jid : (jid?.remoteJid || '?');
-        if (VERBOSE_LOGS) log('WA-SEND', `${phoneNumber}: sent msg | id=${res?.key?.id || '?'} jid=${toJid}`);
-        return res;
-    };
-
-    const originalSaveCreds = saveCreds;
-    const wrappedSaveCreds = async () => {
-        await originalSaveCreds();
-        if (isSupabaseEnabled()) {
-            const session = waSessions.get(phoneNumber);
-            if (session && session.allowSupabaseSync) {
-                debouncedSyncLocalToSupabase(phoneNumber, authDir);
-            }
-        }
-    };
-    sock.ev.on('creds.update', wrappedSaveCreds);
-
-    if (isSupabaseEnabled()) {
-        const originalKeysSet = state.keys.set;
-        state.keys.set = async (data) => {
-            await originalKeysSet(data);
-            const session = waSessions.get(phoneNumber);
-            if (session && session.allowSupabaseSync) {
-                debouncedSyncLocalToSupabase(phoneNumber, authDir);
-            }
-        };
-    }
-
-    waSessions.set(phoneNumber, {
-        telegramChatId: tgId ?? null,
-        sock,
-        authDir,
-        allowSupabaseSync: false
-    });
-
-    if (tgId !== null && typeof tgId !== 'undefined') {
-        setTelegramUserState(tgId, {
-            phoneNumber,
-            status: nextStatus,
-            sock
-        });
-        saveUserMap();
-    }
-
-    setupSocketEvents(sock, phoneNumber, tgId ?? null, authDir, resolvedVersion, isRestore);
-    setupMessageHandler(sock, phoneNumber, tgId ?? null);
-
-    return { sock, state, version: resolvedVersion };
-}
-
 async function cleanupDisconnectedSession({ phoneNumber, tgId, authDir, notifyText = null, removeAuthDir = false, reason = 'unspecified' }) {
     log('SESSION', `${phoneNumber}: cleaning up session. Reason: ${reason}`);
     waSessions.delete(phoneNumber);
