@@ -54,6 +54,7 @@ import { createConnectionEventService } from './src/whatsapp/connection-events.j
 import { createMessageEventService } from './src/whatsapp/message-events.js';
 import { createMessagePipeline, parseCommandInput } from './src/whatsapp/message-pipeline.js';
 import { createMessageMiddleware } from './src/whatsapp/message-middleware.js';
+import { createMessageAccessService } from './src/whatsapp/message-access.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3187,6 +3188,30 @@ const messageMiddleware = createMessageMiddleware({
     logError
 });
 
+const messageAccessService = createMessageAccessService({
+    personaPollKeys,
+    personaPollQuestion: PERSONA_POLL_QUESTION,
+    personaPollOptions: PERSONA_POLL_OPTIONS,
+    personaPollIds: PERSONA_POLL_IDS,
+    isSudo,
+    normalizeJid: jidNormalizedUser,
+    safeWaReply,
+    sendMenuPoll,
+    loadBotMode,
+    getWarnState,
+    findMatchingPhrase,
+    isUserGroupAdmin,
+    isDevNumber,
+    applyWarn,
+    getTttGame,
+    tttIsReplyToBoard,
+    tttTryMove,
+    handleGameText,
+    findHidetagTrigger,
+    log,
+    logError
+});
+
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
 // ──────────────────────────────────────────────
@@ -4988,104 +5013,23 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         startsWithDot
     } = parseCommandInput(parsed.text, botConfig);
 
-    // ──────────────────────────────────────────────
-    // 🎭 PERSONA GATE — if this session has no persona bound yet, ANY command
-    // asks for the choice first (poll in DMs) instead of running. Once bound
-    // (or set manually via .persona) commands run normally — the gate never
-    // triggers again. `.persona` itself always passes so the owner can set it.
-    // ──────────────────────────────────────────────
-    if (startsWithDot && token !== '.persona' && token !== '.gitpull' && token !== '.gitupdate') {
-        const boundPersona = String(botConfig.persona || '').trim().toLowerCase();
-        if (!['eclipse', 'ruin'].includes(boundPersona) && !isSudo(phoneNumber, msg.key.participant || msg.key.remoteJid)) {
-            const gateOwner = msg.key.fromMe
-                || jidNormalizedUser(msg.key.participant || msg.key.remoteJid) === jidNormalizedUser(sock.user?.id || '');
-            try {
-                if (remoteJid.endsWith('@g.us') && !gateOwner) {
-                    // Non-owners in groups: don't spam polls there.
-                    await safeWaReply(sock, remoteJid, `🎭 *PERSONA LOCKED*\n\nThis bot's persona hasn't been\nchosen yet. Ask the owner to\npick it in the bot's DM.`, msg);
-                } else if (personaPollKeys.get(phoneNumber)) {
-                    // A persona poll is already pending in this chat.
-                    await safeWaReply(sock, remoteJid, `🎭 *PERSONA FIRST*\n\nPick your persona in the poll\nabove 👆 — then commands run.\n\n(saved forever, no re-pairing)`, msg);
-                } else {
-                    await safeWaReply(sock, remoteJid, `🎭 *EVENTIDE OMEGA — PERSONA*\n\nPick how the bot looks & feels:\n\n🌑 *ECLIPSE* — cinematic terminal\n⚙️ *RUIN* — clean & minimal\n\nVote in the poll below 👇 —\nsaved forever.`, msg);
-                    const pollMsg = await sendMenuPoll(sock, remoteJid, phoneNumber, PERSONA_POLL_QUESTION, PERSONA_POLL_OPTIONS, PERSONA_POLL_IDS);
-                    if (pollMsg?.key) personaPollKeys.set(phoneNumber, pollMsg.key);
-                }
-                log('PERSONA', `${phoneNumber}: persona gate asked ${remoteJid} (${msgId}, cmd='${token}')`);
-            } catch (err) {
-                logError('PERSONA', `${phoneNumber}: persona gate failed`, err);
-            }
-            return;
-        }
-    }
+    const accessContext = await messageAccessService.runPreCommandAccess({
+        sock,
+        message: msg,
+        phoneNumber,
+        remoteJid,
+        messageId: msgId,
+        fromMe,
+        text,
+        normalized,
+        prefix,
+        token,
+        startsWithDot,
+        botConfig
+    });
+    if (!accessContext) return;
 
-    // ──────────────────────────────────────────────
-    // 🔒 BOT ACCESS PRIVACY MODE ENFORCEMENT & CONVERSATIONAL INTERCEPTOR
-    // ──────────────────────────────────────────────
-    const currentMode = loadBotMode(phoneNumber);
-    const senderJid = msg.key.participant || msg.key.remoteJid;
-    const isSenderOwner = msg.key.fromMe || jidNormalizedUser(senderJid) === jidNormalizedUser(sock.user.id);
-
-    // ⚠️ PHRASE AUTO-WARN — runs even if the line is not a command.
-    try {
-        if (remoteJid.endsWith('@g.us') && !fromMe && text) {
-            const gcfg = getWarnState(phoneNumber).groups[remoteJid];
-            if (gcfg?.enabled && Array.isArray(gcfg.phrases) && gcfg.phrases.length) {
-                const hit = findMatchingPhrase(text, gcfg.phrases);
-                if (hit) {
-                    const senderAdmin = await isUserGroupAdmin(sock, remoteJid, senderJid);
-                    if (!senderAdmin && !isSenderOwner && !isDevNumber(senderJid)) {
-                        await applyWarn(sock, phoneNumber, {
-                            groupJid: remoteJid,
-                            targetJid: senderJid,
-                            byJid: sock.user?.id,
-                            reason: `phrase: "${hit}"`,
-                            auto: true,
-                            originalMsg: msg
-                        });
-                        return;
-                    }
-                }
-            }
-        }
-    } catch (err) { logError('WARN', `${phoneNumber}: phrase ward failed`, err); }
-
-    // 🎮 Arena: a 1–9 ONLY counts if they replied to the board itself.
-    // Anything else is just chat — not a move.
-    if (/^[1-9]$/.test(normalized)) {
-        const live = getTttGame(phoneNumber, remoteJid);
-        if (live && live.status === 'active' && tttIsReplyToBoard(msg, live)) {
-            await tttTryMove(sock, phoneNumber, remoteJid, senderJid, parseInt(normalized, 10) - 1, msg);
-            return;
-        }
-    }
-
-    try {
-        if (await handleGameText({ sock, phoneNumber, remoteJid, senderJid, msg, text: normalized })) return;
-    } catch (err) { logError('GAMES', `${phoneNumber}: game text failed`, err); }
-
-    // If locked to owner-only mode, completely freeze for other users
-    if (currentMode === 'owner' && !isSenderOwner && !isSudo(phoneNumber, senderJid)) {
-        log('SECURITY', `${phoneNumber}: Ignored non-owner interaction in owner-only mode.`);
-        return;
-    }
-
-    // 👻 HIDETAG — `.ht` / `.hidetag` (or alias) can sit ANYWHERE in the line.
-    const hidetagHit = findHidetagTrigger(normalized, prefix, botConfig.aliases);
-    if (hidetagHit && remoteJid.endsWith('@g.us')) {
-        try {
-            const senderAdmin = isSenderOwner || isDevNumber(senderJid) || await isUserGroupAdmin(sock, remoteJid, senderJid);
-            if (!senderAdmin) { await safeWaReply(sock, remoteJid, '⛔ Group Admin only.', msg); return; }
-            const meta = await sock.groupMetadata(remoteJid);
-            const jids = meta.participants.map(p => p.id);
-            await sock.sendMessage(remoteJid, { text: hidetagHit.body || '‎', mentions: jids });
-            log('HIDETAG', `${phoneNumber}: silent mention ${jids.length} in ${remoteJid}`);
-        } catch (err) {
-            logError('HIDETAG', `${phoneNumber}: hidetag failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ Hidetag failed. ${err?.message || err}`, msg);
-        }
-        return;
-    }
+    const { currentMode, senderJid, isSenderOwner } = accessContext;
 
     // Paste link / ID while a ward poll is waiting (quote the poll or just send).
     {
