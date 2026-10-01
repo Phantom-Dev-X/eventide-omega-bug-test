@@ -56,6 +56,7 @@ import { createMessagePipeline, parseCommandInput } from './src/whatsapp/message
 import { createMessageMiddleware } from './src/whatsapp/message-middleware.js';
 import { createMessageAccessService } from './src/whatsapp/message-access.js';
 import { createMessageConversationService } from './src/whatsapp/message-conversation.js';
+import { createMessageConfigInputService } from './src/whatsapp/message-config-input.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3230,6 +3231,22 @@ const messageConversationService = createMessageConversationService({
     logError
 });
 
+const messageConfigInputService = createMessageConfigInputService({
+    autoreactSessions,
+    antiConfigSessions,
+    warnConfigSessions,
+    welcomeGoodbyeSessions,
+    loadBotConfig,
+    saveBotConfig,
+    getAntideleteState,
+    saveAntideleteState,
+    ensureWarnGroup,
+    getWarnState,
+    saveWarnState,
+    safeWaReply,
+    buildOmegaTerminal
+});
+
 // ──────────────────────────────────────────────
 // 🔐 BRUTE-FORCE POLL DECRYPTION
 // ──────────────────────────────────────────────
@@ -5063,211 +5080,15 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     });
     if (conversationHandled) return;
 
-    // AI Help mode interceptor (runs on normal text without dots)
-    if (!startsWithDot) {
-        // 🎭 AUTOREACT config text-input flow (contact / channel awaiting)
-        const arSession = autoreactSessions.get(phoneNumber);
-        if (arSession?.step === 'awaiting_contact' || arSession?.step === 'awaiting_channel') {
-            const isContact = arSession.step === 'awaiting_contact';
-            if (text.toLowerCase() === '.cancel' || text.toLowerCase() === 'cancel') {
-                autoreactSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(`   ✦ *CANCELLED* :: no changes made.`), msg);
-                return;
-            }
-            const cfg = loadBotConfig(phoneNumber).autoreact || { enabled:false, endpoints:{groups:[],channels:[],contacts:[]} };
-            cfg.endpoints = cfg.endpoints || {groups:[],channels:[],contacts:[]};
-            if (isContact) {
-                const digits = text.replace(/\D/g,'');
-                if (digits.length < 7) {
-                    await safeWaReply(sock, remoteJid, `❌ Invalid number. Enter a valid number, or type *.cancel* to exit.`, msg);
-                    return;
-                }
-                const num = digits;
-                if (!cfg.endpoints.contacts.includes(num)) cfg.endpoints.contacts.push(num);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                    `   ░▒▓█ *ENDPOINT_ADDED* █▓▒░\n\n` +
-                    `   ✦ *TYPE* :: CONTACT\n` +
-                    `   ✦ *TARGET* :: ${num}\n\n` +
-                    `   All msgs from this number will be\n` +
-                    `   auto-reacted.`
-                ), msg);
-            } else {
-                const val = text.trim();
-                if (!cfg.endpoints.channels.includes(val)) cfg.endpoints.channels.push(val);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                    `   ░▒▓█ *ENDPOINT_ADDED* █▓▒░\n\n` +
-                    `   ✦ *TYPE* :: CHANNEL\n` +
-                    `   ✦ *TARGET* :: ${val}\n\n` +
-                    `   Channel added to auto-react.`
-                ), msg);
-            }
-            const bc = loadBotConfig(phoneNumber); bc.autoreact = cfg; saveBotConfig(phoneNumber, bc);
-            autoreactSessions.delete(phoneNumber);
-            return;
-        }
-
-        // 🛡️ ANTIDELETE config text-input flow (contact / channel awaiting)
-        const adSession = antiConfigSessions.get(phoneNumber);
-        if (adSession?.step === 'awaiting_contact' || adSession?.step === 'awaiting_channel') {
-            const isContact = adSession.step === 'awaiting_contact';
-            if (text.toLowerCase() === '.cancel' || text.toLowerCase() === 'cancel') {
-                antiConfigSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(`   ✦ *CANCELLED* :: no changes made.`), msg);
-                return;
-            }
-            const ad = getAntideleteState(phoneNumber);
-            ad.endpoints = ad.endpoints || { groups: [], channels: [], contacts: [] };
-            if (isContact) {
-                const digits = text.replace(/\D/g, '');
-                if (digits.length < 7) {
-                    await safeWaReply(sock, remoteJid, `❌ Invalid number. Enter a valid number, or type *.cancel* to exit.`, msg);
-                    return;
-                }
-                if (!ad.endpoints.contacts.includes(digits)) ad.endpoints.contacts.push(digits);
-                saveAntideleteState(phoneNumber, ad);
-                antiConfigSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                    `   ░▒▓█ *ENDPOINT_ADDED* █▓▒░\n\n` +
-                    `   ✦ *TYPE* :: CONTACT\n` +
-                    `   ✦ *TARGET* :: ${digits}\n\n` +
-                    `   Deleted msgs from this number will\n` +
-                    `   be forwarded to the owner DM.\n` +
-                    `   Arm it with *.antidelete on* if needed.`
-                ), msg);
-            } else {
-                const val = text.trim();
-                if (!ad.endpoints.channels.includes(val)) ad.endpoints.channels.push(val);
-                saveAntideleteState(phoneNumber, ad);
-                antiConfigSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                    `   ░▒▓█ *ENDPOINT_ADDED* █▓▒░\n\n` +
-                    `   ✦ *TYPE* :: CHANNEL\n` +
-                    `   ✦ *TARGET* :: ${val}\n\n` +
-                    `   Channel added to anti-delete.\n` +
-                    `   Arm it with *.antidelete on* if needed.`
-                ), msg);
-            }
-            return;
-        }
-
-        // ⚠️ WARN config text-input (limit / phrase)
-        const wnSession = warnConfigSessions.get(phoneNumber);
-        if (wnSession?.step === 'awaiting_limit' || wnSession?.step === 'awaiting_phrase') {
-            if (text.toLowerCase() === '.cancel' || text.toLowerCase() === 'cancel') {
-                warnConfigSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(`   ✦ *CANCELLED* :: no changes made.`), msg);
-                return;
-            }
-            const group = wnSession.group;
-            if (!group) { warnConfigSessions.delete(phoneNumber); await safeWaReply(sock, remoteJid, '❌ Warn session expired. Use .warnconfig again.', msg); return; }
-            if (wnSession.step === 'awaiting_limit') {
-                const n = parseInt(text.trim(), 10);
-                if (!Number.isFinite(n) || n < 0 || n > 50) {
-                    await safeWaReply(sock, remoteJid, '❌ Send a number 0–50. `0` = never kick. Or *.cancel*', msg);
-                    return;
-                }
-                ensureWarnGroup(phoneNumber, group, { maxWarns: n });
-                warnConfigSessions.set(phoneNumber, { step: 'matrix', group });
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                    `   ░▒▓█ *WARN_LIMIT* █▓▒░\n\n` +
-                    `   ✦ *MAX* :: ${n === 0 ? '∞ (never kick)' : n}\n\n` +
-                    `   " The line is drawn. "`
-                ), msg);
-                return;
-            }
-            const phrase = text.trim();
-            if (phrase.length < 2 || phrase.length > 60) {
-                await safeWaReply(sock, remoteJid, '❌ Phrase must be 2–60 characters. Or *.cancel*', msg);
-                return;
-            }
-            const gcfg = ensureWarnGroup(phoneNumber, group);
-            if (!gcfg.phrases.includes(phrase)) gcfg.phrases.push(phrase);
-            const warn = getWarnState(phoneNumber);
-            warn.groups[group] = gcfg;
-            saveWarnState(phoneNumber, warn);
-            warnConfigSessions.set(phoneNumber, { step: 'matrix', group });
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *PHRASE_BOUND* █▓▒░\n\n` +
-                `   ✦ *PHRASE* :: ${phrase}\n` +
-                `   ✦ *TOTAL* :: ${gcfg.phrases.length}\n\n` +
-                `   " That word now carries\n     a mark. "`
-            ), msg);
-            return;
-        }
-
-        // 🎉 WELCOME/GOODBYE custom message text-input flow
-        const wgSession = welcomeGoodbyeSessions.get(phoneNumber);
-        if (wgSession?.step === 'custom_text') {
-            const isWel = wgSession.type === 'welcome';
-            if (text.toLowerCase() === 'cancel' || text.toLowerCase() === '.cancel') {
-                welcomeGoodbyeSessions.delete(phoneNumber);
-                await safeWaReply(sock, remoteJid, buildOmegaTerminal(`   ✦ *CANCELLED* :: no changes made.`), msg);
-                return;
-            }
-            const cfg = loadBotConfig(phoneNumber);
-            cfg[isWel ? 'welcomeMsg' : 'goodbyeMsg'] = cfg[isWel ? 'welcomeMsg' : 'goodbyeMsg'] || {};
-            cfg[isWel ? 'welcomeMsg' : 'goodbyeMsg'][wgSession.group] = text.trim();
-            saveBotConfig(phoneNumber, cfg);
-            welcomeGoodbyeSessions.delete(phoneNumber);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ✦ *${isWel ? 'WELCOME' : 'GOODBYE'}* :: CUSTOM\n\n` +
-                `   " The ${isWel ? 'threshold greets' : 'farewell is spoken'}\n     with your words. "`
-            ), msg);
-            return;
-        }
-
-        if (helpModeUsers.has(remoteJid)) {
-            // 🛡️ ANTI-LOOP SAFETY PATH: Ignore the bot's own 'append' echoes.
-            if (
-                (fromMe && eventType === 'append') ||
-                text.startsWith('🤖') || 
-                text.startsWith('╔') || 
-                text.startsWith('✅') || 
-                text.startsWith('eventide omega connected') ||
-                text.startsWith('📌') ||
-                text.startsWith('⚠️')
-            ) {
-                log('LOOP-PREVENTION', `${phoneNumber}: Blocked automated response.`);
-                return;
-            }
-
-            log('HELP-MODE', `${phoneNumber}: Intercepting conversation message in help mode.`);
-            
-            // Reset 10m timer
-            const stateObj = helpModeUsers.get(remoteJid);
-            if (stateObj?.timer) clearTimeout(stateObj.timer);
-
-            const newTimer = setTimeout(async () => {
-                helpModeUsers.delete(remoteJid);
-                try {
-                    await sock.sendMessage(remoteJid, {
-                        text: TERMINAL_HEADER + `╔═════ HELP_MODE ═════╗\n\n   ⏳  Help mode timed out after 10 min inactivity.\n   Type *.help* again to re-enable.`
-                    });
-                } catch {}
-            }, 10 * 60 * 1000);
-
-            helpModeUsers.set(remoteJid, { timer: newTimer });
-
-            try {
-                const systemPrompt = getBoundHelpPrompt(phoneNumber);
-                const aiReply = await callUniversalAI(text, systemPrompt, aiOptsFor(phoneNumber));
-                await safeWaReply(sock, remoteJid, `🤖 *Eventide Help:*\n\n${aiReply}`, msg);
-            } catch (err) {
-                logError('HELP-MODE', 'AI Help reply failed', err);
-                const helpDiagnosticReport = TERMINAL_HEADER + 
-                    `   ❌  *AI_ORACLE — OFFLINE*\n\n` +
-                    `   The help AI couldn't respond right now.\n\n` +
-                    `   *Diagnostic Report:*\n` +
-                    `   • GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? "Set (but request failed — check key validity or quota)" : "Not Set"}\n` +
-                    `   • OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? "Set" : "Not Set"}\n` +
-                    `   • Pollinations Keyless Fallback: Busy or Unavailable (Shared Server IP rate limits reached)\n\n` +
-                    `   *Fix:* Double-check your GEMINI_API_KEY on Render (get a free key from Google AI Studio), add a valid OPENAI_API_KEY — or attach YOUR own Gemini key with *.pluginkey <key>* and this session will use it.`;
-                await safeWaReply(sock, remoteJid, helpDiagnosticReport, msg);
-            }
-            return;
-        }
-        return; // Ignore regular text
-    }
+    const configInputHandled = await messageConfigInputService.handleConfigInput({
+        sock,
+        message: msg,
+        phoneNumber,
+        remoteJid,
+        text,
+        startsWithDot
+    });
+    if (configInputHandled) return;
 
     const sensitiveCmd = token === '.pluginkey' || token === '.plugin';
     const logRaw = sensitiveCmd ? `.pluginkey ${maskApiKey(args[0] || '')}`.trim() : trimForLog(text, 250);
