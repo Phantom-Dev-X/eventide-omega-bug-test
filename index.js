@@ -94,6 +94,7 @@ import { createMenuAssets } from './src/personas/menu-assets.js';
 import { createSessionConfigStore } from './src/config/session-config-store.js';
 import { createMessageLogStore } from './src/services/message-log-store.js';
 import { createHelpVoice } from './src/ai/help-voice.js';
+import { createBaileysHelpers } from './src/whatsapp/baileys-helpers.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -194,12 +195,6 @@ const CONFIG_MENU_PATH      = path.join(__dirname, 'assets', 'config_menu.png');
 const COMMANDS = {
     // Add your normal text commands here!
 };
-
-// ──────────────────────────────────────────────
-// 🔧 STATE
-// ──────────────────────────────────────────────
-let cachedBaileysVersion = null;
-let cachedBaileysVersionAt = 0;
 
 // ✅ Creator-aware admin check. WhatsApp group metadata sets admin = null for
 // the group CREATOR, so `p.admin` truthiness alone wrongly rejected the owner.
@@ -420,81 +415,29 @@ const accessService = createAccessService({
 });
 const { normalizeDigits, isSudo, canVoteOnPoll } = accessService;
 
-function getDisconnectCode(lastDisconnect) {
-    return lastDisconnect?.error?.output?.statusCode
-        ?? lastDisconnect?.error?.statusCode
-        ?? lastDisconnect?.statusCode
-        ?? null;
-}
-
-// Decrypt / Retrieve messages from memory map OR local persistent JSON.
-// Baileys calls this to fetch a message by reference (e.g. for "delete for
-// everyone" — the protocol message carries a reference and Baileys looks up
-// the original here so it can emit the delete).
-async function getMessageFromStore(key) {
-    const inMemory = sentPolls.get(key.id);
-    if (inMemory) return inMemory;
-
-    // Look in the recent-messages cache first (this is how antidelete recovers content)
-    const cacheKey = `__all__:${key.remoteJid || ''}:${key.id}`;
-    for (const [k, v] of recentMessages) {
-        if (k.endsWith(':' + key.id) && v?.message) return v.message;
-    }
-
-    // Full-history recovery: check the persistent msg_log across all sessions
-    for (const number of getStoredSessionDirectories(AUTH_DIR)) {
-        const log = loadMsgLog(number);
-        if (log[key.id]?.message) return log[key.id].message;
-        if (log[key.id]?.text) return { conversation: log[key.id].text };
-    }
-
-    // Fallback: search poll_cache.json files
-    const sessionDirs = getStoredSessionDirectories(AUTH_DIR);
-    for (const number of sessionDirs) {
-        const cache = loadPollCache(number);
-        const cached = cache.get(key.id);
-        if (cached && cached.fullMessage) {
-            return cached.fullMessage;
-        }
-    }
-    return null;
-}
-
-function isRecentMessage(msg, maxAgeSeconds = RECENT_APPEND_WINDOW_SECONDS) {
-    const ts = asNumber(msg?.messageTimestamp);
-    if (!ts) return false;
-    const age = Math.abs(Date.now() / 1000 - ts);
-    return age <= maxAgeSeconds;
-}
-
-// Check if message JID is on the ignore list
-function isIgnoredRemoteJid(remoteJid) {
-    if (!remoteJid) return true;
-    if (remoteJid === 'status@broadcast') return true;
-    if (remoteJid.endsWith('@broadcast')) return true;
-    // NOTE: @newsletter (channels) are NOT ignored here anymore — autoreact /
-    // antidelete watch channels, and the command flow is skipped for them
-    // later in handleWhatsAppMessage.
-    return false;
-}
-
-async function getBaileysVersion() {
-    const maxCacheAgeMs = 60 * 60 * 1000;
-    const now = Date.now();
-    if (cachedBaileysVersion && (now - cachedBaileysVersionAt) < maxCacheAgeMs) {
-        return cachedBaileysVersion;
-    }
-
-    const { version } = await fetchLatestBaileysVersion();
-    cachedBaileysVersion = version;
-    cachedBaileysVersionAt = now;
-    log('BAILEYS', `Using WA version ${version.join('.')}`);
-    return version;
-}
-
-function resolveCommandReply(command, phoneNumber) {
-    return COMMANDS[command] || null;
-}
+const baileysHelpers = createBaileysHelpers({
+    log,
+    logError,
+    authDir: AUTH_DIR,
+    sentPolls,
+    recentMessages,
+    getStoredSessionDirectories,
+    loadMsgLog,
+    loadPollCache,
+    asNumber,
+    fetchLatestBaileysVersion,
+    commands: COMMANDS,
+    recentAppendWindowSeconds: RECENT_APPEND_WINDOW_SECONDS
+});
+const {
+    getDisconnectCode,
+    getMessageFromStore,
+    isRecentMessage,
+    isIgnoredRemoteJid,
+    getBaileysVersion,
+    resolveCommandReply,
+    resetBaileysVersionCache
+} = baileysHelpers;
 
 /**
  * Sends a reply with simulated typing ("composing" state) and organic delay.
@@ -698,10 +641,7 @@ const reconnectionService = createReconnectionService({
     saveUserMap,
     safeTgSend,
     createSocketForSession,
-    resetBaileysVersionCache: () => {
-        cachedBaileysVersion = null;
-        cachedBaileysVersionAt = 0;
-    },
+    resetBaileysVersionCache,
     getBaileysVersion,
     delay,
     getClose428BaseDelayMs: () => parseInt(process.env.CLOSE428_DELAY_MS || '5000', 10) || 5000,
