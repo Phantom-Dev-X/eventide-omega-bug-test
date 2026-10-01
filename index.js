@@ -6286,7 +6286,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // 🛎 .helpconfig eclipse|ruin — choose the AI help voice (owner only).
     // Same pick the first-.help poll writes, for people who want to change
     // later without re-choosing through the poll.
-    if (token === '.helpconfig' || token === '.helpvoice') {
+    if (token === '.helpconfig' || token === '.helpvoice' || token === '.helpset') {
         if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
         const val = (args[0] || '').toLowerCase();
         const curRaw = String(loadBotConfig(phoneNumber).helpPersona || '').trim().toLowerCase();
@@ -6303,6 +6303,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         const cfg = loadBotConfig(phoneNumber);
         cfg.helpPersona = val;
         saveBotConfig(phoneNumber, cfg);
+        helpPersonaPollKeys.delete(phoneNumber); // drop any stale chooser poll
         await safeWaReply(sock, remoteJid,
             `🛎 *HELP PERSONA BOUND* :: ${val.toUpperCase()}\n\n` +
             `Type .help <question> to hear\n` +
@@ -6403,6 +6404,9 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     `🛎 *HELP PERSONA FIRST*\n\n` +
                     `Pick how the oracle speaks in the\n` +
                     `poll above 👆 — then ask me again.\n\n` +
+                    `Poll not showing? Pick by text:\n` +
+                    `• *.helpset eclipse* — cinematic oracle\n` +
+                    `• *.helpset ruin* — friendly support\n\n` +
                     `(saved forever)`, msg);
             } else {
                 await safeWaReply(sock, remoteJid,
@@ -6411,7 +6415,9 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
                     `🌑 *ECLIPSE* — cinematic oracle\n` +
                     `🛎 *RUIN* — friendly customer care\n\n` +
                     `Vote in the poll below 👇 —\n` +
-                    `saved forever.`, msg);
+                    `saved forever.\n\n` +
+                    `No poll? *.helpset eclipse* / *.helpset ruin*\n` +
+                    `picks by text.`, msg);
                 const hpPollMsg = await sendMenuPoll(sock, remoteJid, phoneNumber, HELP_PERSONA_POLL_QUESTION, HELP_PERSONA_POLL_OPTIONS, HELP_PERSONA_POLL_IDS);
                 if (hpPollMsg?.key) helpPersonaPollKeys.set(phoneNumber, hpPollMsg.key);
                 log('HELPP', `${phoneNumber}: help persona gate asked ${remoteJid} (first .help).`);
