@@ -65,6 +65,7 @@ import { createAccountToolCommands } from './src/commands/system/account-tools.j
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createConfigurationCommands } from './src/commands/system/configuration.js';
+import { createAccessModeCommands } from './src/commands/system/access-mode.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3319,6 +3320,13 @@ const commandRegistry = createCommandRegistry([
         warnConfigSessions,
         sendMenuPoll
     }),
+    ...createAccessModeCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        loadBotMode,
+        saveBotMode,
+        terminalHeader: TERMINAL_HEADER
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5872,80 +5880,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         ), msg);
         return;
     }
-    if (token === '.mode') {
-        const targetMode = args[0]?.toLowerCase();
-        const currentMode = loadBotMode(phoneNumber);
-
-        if (!targetMode || !['public', 'owner'].includes(targetMode)) {
-            await safeWaReply(sock, remoteJid,
-                `now: ${currentMode === "owner" ? "owner only" : "public"}\n` +
-                `use: .mode public  |  .mode owner`, msg
-            );
-            return;
-        }
-
-        // Verify the sender is the paired owner
-        if (!isSenderOwner) {
-            await safeWaReply(sock, remoteJid, '❌ Only the paired bot owner can modify the access mode.', msg);
-            return;
-        }
-
-        const prevMode = currentMode;
-        saveBotMode(phoneNumber, targetMode);
-
-        const bannerText = buildOmegaTerminal(
-            `   ░▒▓█ *SYSTEM_MODAL_SHIFT* █▓▒░\n\n` +
-            `   [ 💠 ] *PREVIOUS* : ${prevMode === "owner" ? "OWNER_ONLY" : "PUBLIC"}\n` +
-            `   [ ⚡ ] *CURRENT* : ${targetMode === "owner" ? "OWNER_ONLY" : "PUBLIC"}\n` +
-            `   [ 🛠️ ] *STATUS* : RECONFIGURED\n\n` +
-            (targetMode === "owner"
-                ? `   " *I choose who breathes in*\n     *this space. The gates are*\n     *sealed at my command.* "`
-                : `   " *The gates have opened.*\n     *All who enter are seen.*\n     *Step carefully.* "`
-            )
-        );
-
-        await safeWaReply(sock, remoteJid, bannerText, msg);
-        return;
-    }
-
-    if (token === '.public') {
-        if (!isSenderOwner) {
-            await safeWaReply(sock, remoteJid, '❌ Only the paired bot owner can modify the access mode.', msg);
-            return;
-        }
-        const currentMode = loadBotMode(phoneNumber);
-        saveBotMode(phoneNumber, 'public');
-        await safeWaReply(sock, remoteJid, 
-            TERMINAL_HEADER +
-            `   ░▒▓█ *SYSTEM_MODAL_SHIFT* █▓▒░\n\n` +
-            `   [ 💠 ] *PREVIOUS* : ${currentMode.toUpperCase()}\n` +
-            `   [ ⚡ ] *CURRENT* : PUBLIC\n` +
-            `   [ 🛠️ ] *STATUS* : GATES_OPEN\n\n` +
-            `   " *The gates have opened.*\n     *All who enter are seen.*\n     *Step carefully.* "`, 
-            msg
-        );
-        return;
-    }
-
-    if (token === '.owner') {
-        if (!isSenderOwner) {
-            await safeWaReply(sock, remoteJid, '❌ Only the paired bot owner can modify the access mode.', msg);
-            return;
-        }
-        const currentMode = loadBotMode(phoneNumber);
-        saveBotMode(phoneNumber, 'owner');
-        await safeWaReply(sock, remoteJid, 
-            TERMINAL_HEADER +
-            `   ░▒▓█ *SYSTEM_MODAL_SHIFT* █▓▒░\n\n` +
-            `   [ 💠 ] *PREVIOUS* : ${currentMode.toUpperCase()}\n` +
-            `   [ ⚡ ] *CURRENT* : OWNER_ONLY\n` +
-            `   [ 🛠️ ] *STATUS* : THRONE_SEALED\n\n` +
-            `   " *I choose who breathes in*\n     *this space. The gates are*\n     *sealed at my command.* "`, 
-            msg
-        );
-        return;
-    }
-
     // ──────────────────────────────────────────────
     // 👥 GROUP COMMANDS
     // ──────────────────────────────────────────────

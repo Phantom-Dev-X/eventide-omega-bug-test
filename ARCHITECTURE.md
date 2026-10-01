@@ -28,6 +28,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/owner-operations.js` — privileged backup, process control, reconnect, and logout operations with injected side-effect boundaries
 - `src/commands/system/utilities.js` — sticker/image conversion, QR generation, calculator, and Base64 utilities
 - `src/commands/system/configuration.js` — greeting, autoreact, and interactive-flow cancellation entry points
+- `src/commands/system/access-mode.js` — public and owner-only access mode transitions
 - `src/commands/group/membership.js` — group joining, member changes, invite links, and administrator rank changes
 - `src/commands/group/information.js` — group details, visible and hidden broadcasts, and contact-card exports
 - `src/commands/group/moderation.js` — per-member muting and whole-group lock/unlock controls
