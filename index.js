@@ -74,6 +74,7 @@ import { createPersonaCommands } from './src/commands/system/persona.js';
 import { createSudoCommands } from './src/commands/system/sudo.js';
 import { createConfigDeleteCommands } from './src/commands/system/config-delete.js';
 import { createHelpCommands } from './src/commands/system/help.js';
+import { createAiFunCommands } from './src/commands/fun/ai.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3436,6 +3437,17 @@ const commandRegistry = createCommandRegistry([
         terminalHeader: TERMINAL_HEADER,
         helpModeUsers
     }),
+    ...createAiFunCommands({
+        resolveTargetJid,
+        extractQuotedPlainText,
+        getQuotedContext,
+        normalizeJid: jidNormalizedUser,
+        funRoastSystem,
+        generateScoredFun,
+        loadBotConfig,
+        logError,
+        safeWaReply
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5394,6 +5406,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         isSenderOwner,
         args,
         prefix,
+        pushName,
         botConfig
     })) return;
 
@@ -5710,84 +5723,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         await safeWaReply(sock, remoteJid, `❌ Arena failed to open.\n${err?.message || err}\n\nTry *.ttt* again.`, msg).catch(() => {});
         return;
       }
-    }
-
-    // ──────────────────────────────────────────────
-    // 🎲 FUN COMMANDS (Gemini-cooked, scored, no hardcoded lists)
-    // ──────────────────────────────────────────────
-    const funToken = token === '.pickup' || token === '.rizz' ? '.pickupline' : token;
-    if (['.roast', '.pickupline', '.joke', '.compliment', '.flirt', '.rate', '.ship'].includes(funToken)) {
-        const funTarget = resolveTargetJid(msg, args);
-        const quotedText = extractQuotedPlainText(msg);
-        const targetJid = funTarget || (quotedText ? (getQuotedContext(msg)?.participant || null) : null);
-        const targetNum = targetJid ? String(jidNormalizedUser(targetJid)).split('@')[0] : '';
-        const extra = args.filter(a => !a.startsWith('@') && !/^\d{7,}$/.test(a.replace(/\D/g, ''))).join(' ').trim();
-        const mentions = [];
-        if (targetJid) mentions.push(jidNormalizedUser(targetJid));
-
-        let system = '';
-        let prompt = '';
-        let header = '';
-        let minScore = 7;
-
-        if (funToken === '.roast') {
-            header = '🔥 *ROAST*';
-            system = funRoastSystem();
-            prompt =
-                `Target name/number: ${targetNum || pushName || 'this person'}\n` +
-                (quotedText ? `They said (USE THIS): """${quotedText.slice(0, 400)}"""\n` : 'No quoted message — roast their existence generally.\n') +
-                (extra ? `Extra context from the commander: ${extra}\n` : '') +
-                `Write a roast that would make a WhatsApp group screenshot it. Then score it.`;
-        } else if (funToken === '.pickupline') {
-            header = '💋 *PICKUP LINE*';
-            system = `You write pickup lines that actually sound clever, a little dirty, a little sweet — the kind someone would really send. West African chat energy is welcome. No slurs. No non-con. 1-3 lines.\nOUTPUT EXACTLY:\nLINE: <the line>\nSCORE: <1-10>`;
-            prompt = `Write a fresh pickup line${targetNum ? ` aimed at +${targetNum}` : ''}${quotedText ? ` inspired by them saying: "${quotedText.slice(0, 200)}"` : ''}${extra ? ` about: ${extra}` : ''}. Score it.`;
-        } else if (funToken === '.joke') {
-            header = '😂 *JOKE*';
-            system = `You tell short jokes that land in a group chat. Observational or dark-lite. No slurs. 2-6 lines max.\nOUTPUT EXACTLY:\nJOKE: <the joke>\nSCORE: <1-10>`;
-            prompt = `Tell a fresh joke${extra ? ` about: ${extra}` : ''}${quotedText ? ` riffing on: "${quotedText.slice(0, 200)}"` : ''}. Score it.`;
-        } else if (funToken === '.compliment') {
-            header = '✨ *COMPLIMENT*';
-            system = `You give compliments that feel specific and a bit poetic, not cringe. 1-3 lines.\nOUTPUT EXACTLY:\nTEXT: <the compliment>\nSCORE: <1-10>`;
-            prompt = `Compliment ${targetNum || 'this person'}${quotedText ? ` based on them saying: "${quotedText.slice(0, 200)}"` : ''}${extra ? `: ${extra}` : ''}. Score it.`;
-            minScore = 6;
-        } else if (funToken === '.flirt') {
-            header = '😉 *FLIRT*';
-            system = `You flirt in a WhatsApp voice — confident, funny, a little dangerous. 1-3 lines. No slurs. No non-con.\nOUTPUT EXACTLY:\nLINE: <the flirt>\nSCORE: <1-10>`;
-            prompt = `Flirt with ${targetNum || 'them'}${quotedText ? ` they said: "${quotedText.slice(0, 200)}"` : ''}${extra ? ` vibe: ${extra}` : ''}. Score it.`;
-        } else if (funToken === '.rate') {
-            header = '📊 *RATE*';
-            system = `You rate things out of 10 with a savage or funny one-liner explaining why. Be honest.\nOUTPUT EXACTLY:\nTEXT: <one or two lines ending with X/10>\nSCORE: <same number>`;
-            prompt = quotedText
-                ? `Rate this message out of 10 and explain in one savage/funny line:\n"""${quotedText.slice(0, 400)}"""`
-                : `Rate ${targetNum || extra || 'this person'} out of 10 with one funny line.`;
-            minScore = 1;
-        } else if (funToken === '.ship') {
-            header = '💘 *SHIP*';
-            const ctx = getQuotedContext(msg);
-            const mentioned = (ctx?.mentionedJid || msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []).slice(0, 2);
-            const a = mentioned[0] || senderJid;
-            const b = mentioned[1] || targetJid || remoteJid;
-            mentions.length = 0;
-            mentions.push(jidNormalizedUser(a));
-            if (b) mentions.push(jidNormalizedUser(b));
-            system = `You ship two people like a chaotic group admin. Give them a couple name, a percentage, and one unhinged sentence why. No slurs.\nOUTPUT EXACTLY:\nTEXT: <the ship>\nSCORE: <1-10>`;
-            prompt = `Ship +${String(a).split('@')[0]} with +${String(b || a).split('@')[0]}. Score the take.`;
-        }
-
-        try {
-            await sock.sendPresenceUpdate('composing', remoteJid).catch(() => {});
-            const out = await generateScoredFun(prompt, system, { minScore, tries: funToken === '.roast' ? 3 : 2, temperature: 0.95, geminiKey: String(loadBotConfig(phoneNumber).geminiApiKey || '').trim() });
-            const mentionLine = targetNum && funToken !== '.ship' ? `@${targetNum}\n\n` : '';
-            await sock.sendMessage(remoteJid, {
-                text: `${header}\n\n${mentionLine}${out.body}`,
-                mentions
-            }, { quoted: msg });
-        } catch (err) {
-            logError('FUN', `${funToken} failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ The void refused to cook.\n${err?.message || err}\n\nSet GEMINI_API_KEY on Render if this keeps happening.`, msg);
-        }
-        return;
     }
 
     const replyText = resolveCommandReply(token, phoneNumber);
