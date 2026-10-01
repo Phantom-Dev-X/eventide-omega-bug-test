@@ -9126,6 +9126,62 @@ initWebApp(app, {
 // ──────────────────────────────────────────────
 let gitSyncBusy = false;       // .gitpull in-flight guard
 let shuttingDown = false;      // set by the SIGTERM/SIGINT fast-shutdown handler
+// 🌐 WEB TUNNEL (opt-in: WEB_TUNNEL=cloudflare on the panel) — free Cloudflare
+// quick tunnel: gives the dashboard a clean public https://…trycloudflare.com
+// address — no :port, IP hidden, HTTPS included, no account needed. The URL
+// rotates on every start, so each new URL is logged AND DM'd to the owner on
+// WhatsApp (same path as the deploy DMs).
+let tunnelChild = null;
+let tunnelUrl = null;
+let tunnelStopped = false;
+function dmOwnersWa(text) {
+    for (const sess of waSessions.values()) {
+        try {
+            const myJid = sess?.sock?.authState?.creds?.me?.id;
+            if (!myJid) continue;
+            const selfJid = `${myJid.split(':')[0]}@s.whatsapp.net`;
+            sess.sock.sendMessage(selfJid, { text }).catch(() => {});
+        } catch (_) {}
+    }
+}
+async function startWebTunnel(port) {
+    const mode = String(process.env.WEB_TUNNEL || '').trim().toLowerCase();
+    if (!['cloudflare', 'true', '1', 'yes'].includes(mode)) return;
+    const binPath = path.join(__dirname, 'bin', 'cloudflared');
+    try {
+        if (!fs.existsSync(binPath)) {
+            const archFile = process.arch === 'arm64' ? 'cloudflared-linux-arm64' : 'cloudflared-linux-amd64';
+            log('TUNNEL', `downloading ${archFile} (one-time)…`);
+            const res = await fetch(`https://github.com/cloudflare/cloudflared/releases/latest/download/${archFile}`);
+            if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+            const buf = Buffer.from(await res.arrayBuffer());
+            fs.mkdirSync(path.dirname(binPath), { recursive: true });
+            fs.writeFileSync(binPath, buf);
+            fs.chmodSync(binPath, 0o755);
+            log('TUNNEL', `cloudflared saved (${Math.round(buf.length / 1048576)}MB)`);
+        }
+        tunnelChild = spawn(binPath, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const huntUrl = chunk => {
+            const m = String(chunk).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+            if (m && tunnelUrl !== m[0]) {
+                tunnelUrl = m[0];
+                log('TUNNEL', `🌐 dashboard live at ${tunnelUrl}`);
+                dmOwnersWa(`🌐 *WEB TUNNEL UP*\n\n${tunnelUrl}\n\nPair/dashboard address — no port, HTTPS, IP hidden.\nRotates on restart; every new URL gets DM'd here.`);
+            }
+        };
+        tunnelChild.stdout.on('data', huntUrl);
+        tunnelChild.stderr.on('data', huntUrl);
+        tunnelChild.on('exit', code => {
+            tunnelChild = null; tunnelUrl = null;
+            if (tunnelStopped) return;
+            log('TUNNEL', `cloudflared exited (code ${code}) — restarting in 15s`);
+            setTimeout(() => startWebTunnel(port).catch(() => {}), 15000);
+        });
+    } catch (err) {
+        logError('TUNNEL', 'web tunnel could not start (binary download/exec failed?)', err);
+    }
+}
+
 let httpServer = null;         // express server (closed on shutdown)
 
 // Commit subjects can be long — keep the WhatsApp card short.
@@ -9287,6 +9343,7 @@ async function main() {
 
     httpServer = app.listen(PORT, '0.0.0.0', () => {
         log('HTTP', `Server listening on port ${PORT}`);
+        startWebTunnel(PORT).catch(() => {});
         log('HTTP', `GET / -> status summary`);
         log('HTTP', `GET /health -> health info`);
         log('HTTP', `GET /ping -> pong`);
@@ -9331,6 +9388,7 @@ function shutdownBot(signal) {
         try { sess?.sock?.end?.(new Error('shutdown')); } catch (_) {}
     }
     try { if (httpServer) httpServer.close(); } catch (_) {}
+    try { tunnelStopped = true; if (tunnelChild) tunnelChild.kill('SIGKILL'); } catch (_) {}
 
     // explicit, immediate termination with exit code 0
     process.exit(0);
