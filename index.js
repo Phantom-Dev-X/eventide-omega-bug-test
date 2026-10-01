@@ -8685,7 +8685,7 @@ if (tgBot) {
 
         await safeTgSend(
             chatId,
-            `🤖 *WhatsApp Multi-Bot*\n\nSend your number to pair using country code without + sign.\nExample: 2348012345678\n\n/pair — Start pairing\n/status — Show status\n/unbug <number> — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Commands`
+            `🤖 *WhatsApp Multi-Bot*\n\nSend your number to pair using country code without + sign.\nExample: 2348012345678\n\n/pair — Start pairing\n/status — Show status\n/unbug — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Commands`
         );
     });
 
@@ -8769,56 +8769,89 @@ if (tgBot) {
         );
     });
 
-    // /unbug <number|jid> — delete every tracked bug message sent to that
-    // target within the last 72h, for everyone (the target's chat is cleaned
-    // too). Amount-floods delete one message every 3 seconds.
+    // /unbug — antidote: delete tracked bug messages for everyone.
+    //   /unbug <receiver>           → auto: every active bot with tracked sends to that number
+    //   /unbug <sender> <receiver>  → explicit: delete through the bot that SENT the bug
+    //   /unbug all                  → clean every tracked target (end-of-campaign sweep)
+    // WhatsApp rule: only the account that SENT a message can revoke it, so the
+    // delete always goes through the bot number that fired the payload — the
+    // sender is written into the ledger (bug_sends.json) at send time.
     tgBot.onText(/\/unbug/, async (msg) => {
         const chatId = msg.chat.id;
         log('TELEGRAM', `/unbug from ${chatId}`);
         if (!(await requireAdminOrExplain(chatId))) return;
 
-        const arg = (msg.text || '').trim().split(/\s+/)[1] || '';
-        if (!arg) {
+        const parts = (msg.text || '').trim().split(/\s+/).slice(1);
+        if (!parts.length) {
             await safeTgSend(chatId,
                 '🧹 *Unbug — remove sent bug messages*\n\n' +
-                'Usage: `/unbug <number>` (or a group JID)\n\n' +
-                'Deletes every bug message the bot sent to that target in the last 72h — for everyone, so the target is unbugged too. Floods delete one message every 3 seconds.');
+                'Usage:\n`/unbug <receiver>` — auto (any of your bots)\n`/unbug <sender> <receiver>` — through the bot that sent it\n`/unbug all` — clean every tracked target\n\n' +
+                'Deletes bug messages from the last 72h — for everyone, so the target is unbugged too. One message every 3 seconds.');
             return;
         }
-        const targetJid = arg.includes('@') ? arg : `${arg.replace(/\D/g, '')}@s.whatsapp.net`;
 
-        // Find active sessions with tracked sends to this target.
+        const normJid = s => String(s || '').includes('@') ? s : `${String(s || '').replace(/\D/g, '')}@s.whatsapp.net`;
         const jobs = [];
-        for (const [phoneNumber, session] of waSessions) {
-            const entries = loadBugSends(phoneNumber).filter(e => e.jid === targetJid);
-            if (entries.length && session?.sock?.user?.id) jobs.push({ phoneNumber, sock: session.sock });
+        if (parts[0].toLowerCase() === 'all') {
+            for (const [phoneNumber, session] of waSessions) {
+                const entries = loadBugSends(phoneNumber);
+                if (entries.length && session?.sock?.user?.id) jobs.push({ phoneNumber, sock: session.sock, entries });
+            }
+        } else if (parts.length === 1) {
+            const tJid = normJid(parts[0]);
+            for (const [phoneNumber, session] of waSessions) {
+                const entries = loadBugSends(phoneNumber).filter(e => e.jid === tJid);
+                if (entries.length && session?.sock?.user?.id) jobs.push({ phoneNumber, sock: session.sock, entries });
+            }
+        } else {
+            const senderNum = parts[0].replace(/\D/g, '');
+            const tJid = normJid(parts[1]);
+            const session = waSessions.get(senderNum);
+            if (!session?.sock?.user?.id) {
+                await safeTgSend(chatId, `❌ *${senderNum || '?'}* is not a paired/active bot session.`);
+                return;
+            }
+            const entries = loadBugSends(senderNum).filter(e => e.jid === tJid);
+            if (!entries.length) {
+                await safeTgSend(chatId, `ℹ️ No tracked bug messages from *${senderNum}* to *${tJid}* in the last 72h.`);
+                return;
+            }
+            jobs.push({ phoneNumber: senderNum, sock: session.sock, entries });
         }
+
         if (!jobs.length) {
-            await safeTgSend(chatId, `ℹ️ No trackable bug messages for *${targetJid}* — nothing sent in the last 72h, or no active session.`);
+            const tracked = [];
+            for (const [phoneNumber] of waSessions) {
+                const byTarget = {};
+                for (const e of loadBugSends(phoneNumber)) byTarget[e.jid] = (byTarget[e.jid] || 0) + 1;
+                for (const [t, c] of Object.entries(byTarget)) tracked.push(`• ${phoneNumber} → ${t} (${c} msg)`);
+            }
+            await safeTgSend(chatId, tracked.length
+                ? `ℹ️ Nothing matches that. Tracked right now:\n${tracked.join('\n')}`
+                : 'ℹ️ No tracked bug messages in the last 72h — nothing to unbug.');
             return;
         }
 
         let total = 0;
-        for (const job of jobs) total += loadBugSends(job.phoneNumber).filter(e => e.jid === targetJid).length;
-        await safeTgSend(chatId, `🧹 Unbugging *${targetJid}*: ${total} message(s), one every 3s (~${Math.ceil(total * 3 / 60)} min). Stay calm…`);
+        for (const j of jobs) total += j.entries.length;
+        await safeTgSend(chatId, `🧹 Unbugging ${total} message(s) via ${jobs.length} bot session(s), one every 3s (~${Math.ceil(total * 3 / 60)} min). Stay calm…`);
 
         let totalDeleted = 0;
         for (const job of jobs) {
-            const remaining = loadBugSends(job.phoneNumber).filter(e => e.jid === targetJid);
-            for (let i = 0; i < remaining.length; i++) {
-                const entry = remaining[i];
+            for (let i = 0; i < job.entries.length; i++) {
+                const entry = job.entries[i];
                 try {
-                    await job.sock.sendMessage(targetJid, { delete: { remoteJid: targetJid, fromMe: true, id: entry.id } });
+                    await job.sock.sendMessage(entry.jid, { delete: { remoteJid: entry.jid, fromMe: true, id: entry.id } });
                     totalDeleted++;
                 } catch (err) {
                     logError('TEST', `unbug delete failed (${entry.id})`, err);
                 }
                 // Drop the entry either way so a restart never redoes finished work.
                 saveBugSends(job.phoneNumber, loadBugSends(job.phoneNumber).filter(e => e.id !== entry.id));
-                if (i < remaining.length - 1) await delay(3000);
+                if (i < job.entries.length - 1) await delay(3000);
             }
         }
-        await safeTgSend(chatId, `✅ *Unbug complete* — deleted ${totalDeleted}/${total} message(s) for ${targetJid}. The target's chat is clean.`);
+        await safeTgSend(chatId, `✅ *Unbug complete* — deleted ${totalDeleted}/${total} message(s). The target chat(s) are clean.`);
     });
 
     tgBot.onText(/\/disconnect/, async (msg) => {
@@ -8858,7 +8891,7 @@ if (tgBot) {
 
         await safeTgSend(
             chatId,
-            `📖 *Commands*\n\n/start — Welcome message\n/pair — Connect your WhatsApp\n/status — Show status\n/unbug <number> — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Show commands\n\n*WhatsApp commands:*\n.ping`
+            `📖 *Commands*\n\n/start — Welcome message\n/pair — Connect your WhatsApp\n/status — Show status\n/unbug — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Show commands\n\n*WhatsApp commands:*\n.ping`
         );
     });
 
