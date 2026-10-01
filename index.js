@@ -51,6 +51,7 @@ import { createPairingService } from './src/whatsapp/pairing.js';
 import { createSocketService } from './src/whatsapp/socket.js';
 import { createReconnectionService } from './src/whatsapp/reconnection.js';
 import { createConnectionEventService } from './src/whatsapp/connection-events.js';
+import { createMessageEventService } from './src/whatsapp/message-events.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -7953,137 +7954,24 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     }
 }
 
-// Attach event listeners
+const messageEventService = createMessageEventService({
+    verboseLogs: VERBOSE_LOGS,
+    lastPollVotes,
+    loadBotConfig,
+    loadBotMode,
+    handlePollUpdateMessage,
+    handleMenuVote,
+    handleWhatsAppMessage,
+    extractRevokeRef,
+    handleAntideleteRevoke,
+    handlePollVote,
+    normalizeJid: jidNormalizedUser,
+    log,
+    logError
+});
+
 function setupMessageHandler(sock, phoneNumber, tgId) {
-    log('WA-HANDLER', `${phoneNumber}: attaching message handlers (tgId=${tgId ?? 'none'})`);
-    log('WA-HANDLER', `${phoneNumber}: ✅ commands now accepted — the bot will process incoming messages from here on.`);
-    log('REACT', `${phoneNumber}: ⚡ REACT SYSTEM ARMED — prefix="${loadBotConfig(phoneNumber)?.prefix || '.'}" mode=${loadBotMode(phoneNumber)} (VERBOSE_LOGS=${VERBOSE_LOGS ? 'ON' : 'OFF'})`);
-
-    sock.ev.on('messages.upsert', async (event) => {
-        const type = event?.type || 'unknown';
-        const messages = Array.isArray(event?.messages) ? event.messages : [];
-        if (VERBOSE_LOGS) log('WA-EVENT', `${phoneNumber}: messages.upsert received | type=${type} count=${messages.length}`);
-
-        for (const msg of messages) {
-            if (VERBOSE_LOGS) log('WA-EVENT', `${phoneNumber}: upsert msg | type=${type} id=${msg?.key?.id || '?'} fromMe=${!!msg?.key?.fromMe} jid=${msg?.key?.remoteJid || '?'} participant=${msg?.key?.participant || '-'}`);
-
-            // ⚡ Reactions now fire inside handleWhatsAppMessage (REACT-V4) —
-            // on the same parsed text the command flow uses, for both notify
-            // and append types.
-
-            try {
-                // 🔐 Baileys rc13 ships with poll vote decryption commented out.
-                // Poll votes arrive as pollUpdateMessage upserts — decrypt manually.
-                if (msg?.message?.pollUpdateMessage) {
-                    log('POLL', `${phoneNumber}: pollUpdateMessage upsert received for ${msg.key?.id}`);
-                    const voteResult = handlePollUpdateMessage(sock, phoneNumber, msg);
-                    if (voteResult) {
-                        log('POLL', `${phoneNumber}: Decrypted poll vote on option ID: ${voteResult.optionId}`);
-                        const pollRemoteJid = msg.key?.remoteJid || msg.key?.participant || null;
-                        if (pollRemoteJid) {
-                            await handleMenuVote(sock, pollRemoteJid, phoneNumber, voteResult.optionId, voteResult.pollId, voteResult.voterJid);
-                        }
-                        continue; // Already handled — skip normal message flow
-                    }
-                }
-
-                await handleWhatsAppMessage(sock, msg, phoneNumber, tgId, type);
-            } catch (err) {
-                logError('WA-HANDLER', `${phoneNumber}: error while handling message`, err);
-            }
-        }
-    });
-
-    // 🛡️ ANTIDELETE: recover revoke events for any watched group / channel / contact.
-    sock.ev.on('messages.update', async (updates) => {
-        for (const { key, update } of (Array.isArray(updates) ? updates : [])) {
-            try {
-                const refKey = extractRevokeRef(key, update);
-                if (!refKey) continue;
-                await handleAntideleteRevoke(sock, phoneNumber, key, refKey);
-            } catch (err) { logError('ANTIDELETE', `${phoneNumber}: antidelete failed`, err); }
-        }
-    });
-
-    // Real-time Poll Vote Interceptor (e.g., for the Menu options poll)
-    sock.ev.on('messages.update', async (updates) => {
-        const count = Array.isArray(updates) ? updates.length : 0;
-        log('WA-EVENT', `${phoneNumber}: messages.update received | count=${count}`);
-
-        // Antibug testing: reveal the server's verdict per message instead of just
-        // a count. 0=ERROR (messageStubParameters carry the server's error code),
-        // 1=PENDING, 2=SERVER_ACK (accepted), 3=DELIVERY_ACK (reached target),
-        // 4=READ, 5=PLAYED. This is how we tell "silently rejected" from
-        // "delivered but renders invisibly" for the .test payloads.
-        const WA_STATUS_NAMES = { 0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK', 3: 'DELIVERY_ACK', 4: 'READ', 5: 'PLAYED' };
-        for (const { key, update } of (Array.isArray(updates) ? updates : [])) {
-            if (update && typeof update.status === 'number') {
-                const stub = Array.isArray(update.messageStubParameters) && update.messageStubParameters.length
-                    ? ` code=[${update.messageStubParameters.join(', ')}]`
-                    : '';
-                log('WA-EVENT', `${phoneNumber}: status ${WA_STATUS_NAMES[update.status] || update.status} | id=${key?.id} jid=${key?.remoteJid || '?'}${stub}`);
-            }
-        }
-
-        for (const { key, update } of updates) {
-            if (update.pollUpdates) {
-                log('POLL', `${phoneNumber}: Poll vote update received for message ${key.id}`);
-
-                const votedOptionId = handlePollVote(sock, phoneNumber, key, update.pollUpdates);
-                if (votedOptionId) {
-                    // Only reply when the voter changes their selection.
-                    const voterJid = jidNormalizedUser(key.participant || key.remoteJid || '') || 'me';
-                    const voteKey = `${key.id}:${voterJid}`;
-                    if (lastPollVotes.get(voteKey) !== votedOptionId) {
-                        lastPollVotes.set(voteKey, votedOptionId);
-                        log('POLL', `${phoneNumber}: Decrypted vote on option ID: ${votedOptionId}`);
-                        const pollRemoteJid = key.remoteJid || key.participant || null;
-                        if (pollRemoteJid) {
-                            await handleMenuVote(sock, pollRemoteJid, phoneNumber, votedOptionId);
-                        }
-                    } else {
-                        log('POLL', `${phoneNumber}: duplicate vote on ${votedOptionId} ignored`);
-                    }
-                }
-            }
-        }
-    });
-
-    sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
-        log(
-            'WA-EVENT',
-            `${phoneNumber}: messaging-history.set received | chats=${chats?.length || 0} contacts=${contacts?.length || 0} messages=${messages?.length || 0} isLatest=${!!isLatest}`
-        );
-    });
-
-    // 🎉 WELCOME / GOODBYE — fire on member join / leave
-    sock.ev.on('group-participants.update', async (update) => {
-        const { id, participants, action } = update || {};
-        if (!id || !Array.isArray(participants)) return;
-        try {
-            const cfg = loadBotConfig(phoneNumber);
-            const which = action === 'add' ? 'welcomeMsg' : action === 'remove' ? 'goodbyeMsg' : null;
-            if (!which) return;
-            const setting = (cfg[which] || {})[id];
-            if (!setting || setting === 'off') return;
-            for (const p of participants) {
-                const num = p.split('@')[0];
-                const name = num;
-                let msgText;
-                if (setting === 'default') {
-                    msgText = which === 'welcomeMsg'
-                        ? `*Welcome to the group, ${name}!* 👋\nEnjoy your stay under the eclipse.`
-                        : `*Goodbye, ${name}.* The void will remember you.`;
-                } else {
-                    msgText = setting.replace(/{{name}}/g, name);
-                }
-                await sock.sendMessage(id, { text: msgText }).catch(()=>{});
-                log('WELCOME', `${phoneNumber}: ${action} message for ${num} in ${id}`);
-            }
-        } catch (err) {
-            logError('WELCOME', `${phoneNumber}: welcome/goodbye send failed`, err);
-        }
-    });
+    return messageEventService.setupMessageHandler(sock, phoneNumber, tgId);
 }
 
 const pairingService = createPairingService({
