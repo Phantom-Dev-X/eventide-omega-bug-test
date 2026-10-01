@@ -48,6 +48,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/group/protections.js` — anti-link/mention/forward toggles and antidelete configuration
 - `src/commands/group/warnings.js` — warning mutations, ledgers, authorization, and warning-menu initialization
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
+- `src/telegram/commands.js` — Telegram bot command surface: /start, /pair, pairing-number text intake, /status, /unbug, /disconnect, and /help
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
 
