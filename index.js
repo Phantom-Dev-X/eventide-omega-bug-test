@@ -73,6 +73,7 @@ import { createDeploymentCommands } from './src/commands/system/deployment.js';
 import { createPersonaCommands } from './src/commands/system/persona.js';
 import { createSudoCommands } from './src/commands/system/sudo.js';
 import { createConfigDeleteCommands } from './src/commands/system/config-delete.js';
+import { createHelpCommands } from './src/commands/system/help.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3416,6 +3417,25 @@ const commandRegistry = createCommandRegistry([
         saveAntideleteState,
         saveBotConfig
     }),
+    ...createHelpCommands({
+        safeWaReply,
+        buildBugMenuText,
+        log,
+        logError,
+        isSudo,
+        loadBotConfig,
+        helpPersonaPollKeys,
+        sendMenuPoll,
+        helpPersonaPollQuestion: HELP_PERSONA_POLL_QUESTION,
+        helpPersonaPollOptions: HELP_PERSONA_POLL_OPTIONS,
+        helpPersonaPollIds: HELP_PERSONA_POLL_IDS,
+        getBoundHelpPrompt,
+        callUniversalAI,
+        aiOptsFor,
+        getStaticHelpAnswer,
+        terminalHeader: TERMINAL_HEADER,
+        helpModeUsers
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5348,137 +5368,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             token = botConfig.aliases[aliasKey];
             log('ALIAS', `${phoneNumber}: alias "${aliasKey}" -> ${token}`);
         }
-    }
-
-    // 🧪 Bug menu — lists the TEMPORARY antibug test commands (test build).
-    // token has already been normalized for the configured prefix above.
-    if (['.bugmenu', '.bug-menu', '.bugmemu'].includes(token)) {
-        const menuText = buildBugMenuText(prefix);
-
-        try {
-            // A failed reaction should not prevent the actual menu reply.
-            await sock.sendMessage(remoteJid, {
-                react: { text: '🎗️', key: msg.key }
-            }).catch(() => {});
-            await safeWaReply(sock, remoteJid, menuText, msg);
-        } catch (err) {
-            logError('WA-CMD', `${phoneNumber}: Failed sending bug menu`, err);
-        }
-        return;
-    }
-
-    // ──────────────────────────────────────────────
-    // 🗣️ CUSTOMER CARE AI ORACLE (.help <question>)
-    // ──────────────────────────────────────────────
-    if (token === '.help' || token === '.mhelp' || token === '.jelp') {
-        // 🛡️ Owner OR sudo: .help answers the owner and every elevated user.
-        // (.jelp = typo-forgiving alias.) Bot-config commands stay owner-only,
-        // but asking the oracle is open to the chosen.
-        if (!isSenderOwner && !isSudo(phoneNumber, senderJid)) {
-            log('SECURITY', `${phoneNumber}: Ignored .help from non-owner/non-sudo.`);
-            return;
-        }
-        const question = args.join(' ').trim();
-
-        // 🛎 HELP PERSONA GATE — if no AI voice is bound yet, the first .help
-        // asks via a poll instead of answering. The poll is deleted on vote
-        // and the choice is saved forever.
-        const boundHp = String(loadBotConfig(phoneNumber).helpPersona || '').trim().toLowerCase();
-        if (!['eclipse', 'ruin'].includes(boundHp)) {
-            if (helpPersonaPollKeys.get(phoneNumber)) {
-                await safeWaReply(sock, remoteJid,
-                    `🛎 *HELP PERSONA FIRST*\n\n` +
-                    `Pick how the oracle speaks in the\n` +
-                    `poll above 👆 — then ask me again.\n\n` +
-                    `Poll not showing? Pick by text:\n` +
-                    `• *.helpset eclipse* — cinematic oracle\n` +
-                    `• *.helpset ruin* — friendly support\n\n` +
-                    `(saved forever)`, msg);
-            } else {
-                await safeWaReply(sock, remoteJid,
-                    `🛎 *EVENTIDE OMEGA — HELP PERSONA*\n\n` +
-                    `Choose how I talk to you:\n\n` +
-                    `🌑 *ECLIPSE* — cinematic oracle\n` +
-                    `🛎 *RUIN* — friendly customer care\n\n` +
-                    `Vote in the poll below 👇 —\n` +
-                    `saved forever.\n\n` +
-                    `No poll? *.helpset eclipse* / *.helpset ruin*\n` +
-                    `picks by text.`, msg);
-                const hpPollMsg = await sendMenuPoll(sock, remoteJid, phoneNumber, HELP_PERSONA_POLL_QUESTION, HELP_PERSONA_POLL_OPTIONS, HELP_PERSONA_POLL_IDS);
-                if (hpPollMsg?.key) helpPersonaPollKeys.set(phoneNumber, hpPollMsg.key);
-                log('HELPP', `${phoneNumber}: help persona gate asked ${remoteJid} (first .help).`);
-            }
-            return;
-        }
-        const systemPrompt = getBoundHelpPrompt(phoneNumber);
-
-        // If a specific question is asked, run AI immediately (100% AI-controlled)
-        if (question) {
-            try {
-                log('HELP-CMD', `${phoneNumber}: Querying AI Oracle: ${question}`);
-                const response = await callUniversalAI(question, systemPrompt, aiOptsFor(phoneNumber));
-                await safeWaReply(sock, remoteJid, `🤖 *Eventide Help:*\n\n${response}`, msg);
-            } catch (err) {
-                logError('HELP-CMD', 'AI Oracle failed', err);
-                // ⚡ STATIC FALLBACK: answer from the built-in index first so
-                // core questions (antilink, persona, autoreact...) still get a
-                // real answer even while the AI backend is offline.
-                const staticAns = getStaticHelpAnswer(question);
-                if (staticAns) {
-                    log('HELP-CMD', `${phoneNumber}: AI offline — answering from static index.`);
-                    await safeWaReply(sock, remoteJid, `🤖 *Eventide Help (offline index):*\n\n${staticAns}`, msg);
-                    return;
-                }
-                const helpDiagnosticReport = TERMINAL_HEADER + 
-                    `   ❌  *AI_ORACLE — OFFLINE*\n\n` +
-                    `   The help AI couldn't respond right now.\n\n` +
-                    `   *Diagnostic Report:*\n` +
-                    `   • GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? "Set (but request failed — check key validity or quota)" : "Not Set"}\n` +
-                    `   • OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? "Set" : "Not Set"}\n` +
-                    `   • Pollinations Keyless Fallback: Busy or Unavailable (Shared Server IP rate limits reached)\n\n` +
-                    `   *Fix:* Double-check your GEMINI_API_KEY on Render (get a free key from Google AI Studio), add a valid OPENAI_API_KEY — or attach YOUR own Gemini key with *.pluginkey <key>* and this session will use it.`;
-                await safeWaReply(sock, remoteJid, helpDiagnosticReport, msg);
-            }
-            return;
-        }
-
-        // Otherwise, toggle help mode ON or OFF with premium headers
-        const helpKey = remoteJid;
-        if (helpModeUsers.has(helpKey)) {
-            const stateObj = helpModeUsers.get(helpKey);
-            if (stateObj?.timer) clearTimeout(stateObj.timer);
-            helpModeUsers.delete(helpKey);
-            
-            const offMsg = TERMINAL_HEADER + 
-                `   ╾━━━ HELP_MODE — OFFLINE ━━━╼\n\n` +
-                `   🔇  AI guide deactivated.\n\n` +
-                `   " The oracle steps back.\n     You walk alone again. "`;
-            await safeWaReply(sock, remoteJid, offMsg, msg);
-        } else {
-            const timer = setTimeout(async () => {
-                helpModeUsers.delete(helpKey);
-                try {
-                    await sock.sendMessage(remoteJid, {
-                        text: TERMINAL_HEADER + `╔═════ HELP_MODE ═════╗\n\n   ⏳  Help mode timed out after 10 min inactivity.\n   Type *.help* again to re-enable.`
-                    });
-                } catch {}
-            }, 10 * 60 * 1000);
-
-            helpModeUsers.set(helpKey, { timer });
-
-            const onMsg = TERMINAL_HEADER +
-                `   ╔══ HELP_PROTOCOL — ACTIVE ══╗\n\n` +
-                `   ✨  *AI help mode is ON*\n\n` +
-                `   Ask me anything about the bot:\n` +
-                `   • _"how do I use antilink?"_\n` +
-                `   • _"what does .kick do?"_\n` +
-                `   • _"how does .mode work?"_\n\n` +
-                `   🔄 Auto-exits after 10 min silence.\n` +
-                `   Type *.help* again to turn off.\n\n` +
-                `   " The oracle is listening. "`;
-            await safeWaReply(sock, remoteJid, onMsg, msg);
-        }
-        return;
     }
 
     // ──────────────────────────────────────────────

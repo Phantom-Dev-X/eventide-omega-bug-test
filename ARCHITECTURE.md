@@ -36,6 +36,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/persona.js` — persona-aware menus and bot/help voice selection flows
 - `src/commands/system/sudo.js` — persistent elevated-user listing, grant, and revocation commands
 - `src/commands/system/config-delete.js` — context-sensitive warning, antidelete, and autoreact list deletion
+- `src/commands/system/help.js` — antibug menu and persona-aware AI help oracle with timed help mode
 - `src/commands/group/membership.js` — group joining, member changes, invite links, and administrator rank changes
 - `src/commands/group/information.js` — group details, visible and hidden broadcasts, and contact-card exports
 - `src/commands/group/moderation.js` — per-member muting and whole-group lock/unlock controls
