@@ -70,6 +70,7 @@ import { createCustomizationCommands } from './src/commands/system/customization
 import { createConfigManagementCommands } from './src/commands/system/config-management.js';
 import { createPluginKeyCommands } from './src/commands/system/plugin-key.js';
 import { createDeploymentCommands } from './src/commands/system/deployment.js';
+import { createPersonaCommands } from './src/commands/system/persona.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3372,6 +3373,23 @@ const commandRegistry = createCommandRegistry([
         logError,
         relaunchSelf
     }),
+    ...createPersonaCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        loadBotConfig,
+        saveBotConfig,
+        sendRuinMenu,
+        sendEclipseMenu,
+        sendMenuPoll,
+        personaPollKeys,
+        helpPersonaPollKeys,
+        personaPollQuestion: PERSONA_POLL_QUESTION,
+        personaPollOptions: PERSONA_POLL_OPTIONS,
+        personaPollIds: PERSONA_POLL_IDS,
+        log,
+        logError
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5320,128 +5338,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         } catch (err) {
             logError('WA-CMD', `${phoneNumber}: Failed sending bug menu`, err);
         }
-        return;
-    }
-
-    // ──────────────────────────────────────────────
-    // 🌌 GRANULAR LOADING MENU COMMAND
-    // ──────────────────────────────────────────────
-    if (token === '.menu') {
-        const persona = String(loadBotConfig(phoneNumber).persona || 'eclipse').toLowerCase();
-        if (persona === 'ruin') {
-            try {
-                await sendRuinMenu(sock, remoteJid, phoneNumber);
-            } catch (err) {
-                logError('WA-CMD', `${phoneNumber}: Failed sending Ruin menu`, err);
-            }
-            return;
-        }
-        await sendEclipseMenu(sock, remoteJid, phoneNumber);
-        return;
-    }
-
-    // .persona eclipse|ruin — switch directly.
-    // .persona poll — resend the chooser without changing the current binding.
-    // .persona reset — clear the binding and resend the first-pair chooser.
-    if (token === '.persona') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
-        const val = (args[0] || '').toLowerCase();
-        const curRaw = String(loadBotConfig(phoneNumber).persona || '').trim().toLowerCase();
-        const cur = ['eclipse', 'ruin'].includes(curRaw) ? curRaw : 'UNBOUND';
-
-        if (val === 'poll' || val === 'choose' || val === 'reset') {
-            const cfg = loadBotConfig(phoneNumber);
-            if (val === 'reset') {
-                cfg.persona = '';
-                saveBotConfig(phoneNumber, cfg);
-            }
-
-            // Remove any stale in-memory poll reference. A failed/hidden old
-            // poll must never prevent the owner from requesting a fresh one.
-            const oldKey = personaPollKeys.get(phoneNumber);
-            personaPollKeys.delete(phoneNumber);
-            if (oldKey?.id) {
-                try {
-                    await sock.sendMessage(oldKey.remoteJid || remoteJid, {
-                        delete: {
-                            remoteJid: oldKey.remoteJid || remoteJid,
-                            id: oldKey.id,
-                            fromMe: true
-                        }
-                    });
-                } catch (_) {}
-            }
-
-            await safeWaReply(sock, remoteJid,
-                val === 'reset'
-                    ? '🎭 *PERSONA RESET*\n\nYour old binding was cleared.\nChoose a fresh persona below 👇'
-                    : `🎭 *PERSONA CHOOSER*\n\nCurrent: *${cur.toUpperCase()}*\nChoose below 👇`,
-                msg
-            );
-            const pollMsg = await sendMenuPoll(
-                sock,
-                remoteJid,
-                phoneNumber,
-                PERSONA_POLL_QUESTION,
-                PERSONA_POLL_OPTIONS,
-                PERSONA_POLL_IDS
-            );
-            if (pollMsg?.key) personaPollKeys.set(phoneNumber, pollMsg.key);
-            log('PERSONA', `${phoneNumber}: persona chooser resent by .persona ${val} (${pollMsg?.key?.id || '?'})`);
-            return;
-        }
-
-        if (val !== 'eclipse' && val !== 'ruin') {
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *PERSONA* █▓▒░\n\n` +
-                `   ✦ *ACTIVE* :: ${cur.toUpperCase()}\n\n` +
-                `   use: .persona poll\n` +
-                `        .persona reset\n` +
-                `        .persona eclipse\n` +
-                `        .persona ruin\n\n` +
-                `   \" eclipse — cinematic.\n     ruin    — clean. \"`
-            ), msg);
-            return;
-        }
-        const cfg = loadBotConfig(phoneNumber);
-        cfg.persona = val;
-        saveBotConfig(phoneNumber, cfg);
-        personaPollKeys.delete(phoneNumber);
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *PERSONA* █▓▒░\n\n` +
-            `   ✦ *BOUND* :: ${val.toUpperCase()}\n` +
-            `   ✦ *ACTION* :: IDENTITY_SWAP\n\n` +
-            `   Type .menu to see your\n` +
-            `   new face.`
-        ), msg);
-        return;
-    }
-
-    // 🛎 .helpconfig eclipse|ruin — choose the AI help voice (owner only).
-    // Same pick the first-.help poll writes, for people who want to change
-    // later without re-choosing through the poll.
-    if (token === '.helpconfig' || token === '.helpvoice' || token === '.helpset') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner only.', msg); return; }
-        const val = (args[0] || '').toLowerCase();
-        const curRaw = String(loadBotConfig(phoneNumber).helpPersona || '').trim().toLowerCase();
-        const cur = ['eclipse', 'ruin'].includes(curRaw) ? curRaw : 'UNBOUND';
-        if (val !== 'eclipse' && val !== 'ruin') {
-            await safeWaReply(sock, remoteJid,
-                `🛎 *HELP PERSONA* 👑\n\n` +
-                `✦ *ACTIVE* :: ${cur.toUpperCase()}\n\n` +
-                `use: .helpconfig eclipse\n` +
-                `     .helpconfig ruin\n\n` +
-                `   " eclipse — cinematic oracle.\n     ruin    — friendly support. "`, msg);
-            return;
-        }
-        const cfg = loadBotConfig(phoneNumber);
-        cfg.helpPersona = val;
-        saveBotConfig(phoneNumber, cfg);
-        helpPersonaPollKeys.delete(phoneNumber); // drop any stale chooser poll
-        await safeWaReply(sock, remoteJid,
-            `🛎 *HELP PERSONA BOUND* :: ${val.toUpperCase()}\n\n` +
-            `Type .help <question> to hear\n` +
-            `the new voice.`, msg);
         return;
     }
 
