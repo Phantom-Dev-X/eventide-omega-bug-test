@@ -68,6 +68,7 @@ import { createConfigurationCommands } from './src/commands/system/configuration
 import { createAccessModeCommands } from './src/commands/system/access-mode.js';
 import { createCustomizationCommands } from './src/commands/system/customization.js';
 import { createConfigManagementCommands } from './src/commands/system/config-management.js';
+import { createPluginKeyCommands } from './src/commands/system/plugin-key.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
@@ -3348,6 +3349,16 @@ const commandRegistry = createCommandRegistry([
         saveBotConfig,
         logError
     }),
+    ...createPluginKeyCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isDevNumber,
+        loadBotConfig,
+        saveBotConfig,
+        splitApiKeys,
+        maskApiKey,
+        isValidGeminiKey
+    }),
     ...createAccountToolCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -5658,71 +5669,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         return;
     }
 
-    // 🔑 .pluginkey <GEMINI_API_KEY> — attach the owner's own Gemini key so
-    // this session's AI (help, fun, etc.) routes through THEIR key first.
-    // .pluginkey off removes it. .pluginkey alone shows masked status.
-    if (token === '.pluginkey' || token === '.plugin') {
-        if (!isSenderOwner && !isDevNumber(senderJid)) { await safeWaReply(sock, remoteJid, '❌ Owner/Dev only. Only the paired bot owner can set their own key.', msg); return; }
-        const arg = args.join(' ').trim();
-        const cfg = loadBotConfig(phoneNumber);
-        if (!arg) {
-            const keys = splitApiKeys(cfg.geminiApiKey);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *PLUGIN_KEY_STATUS* █▓▒░\n\n` +
-                `   ✦ *KEYS* :: ${keys.length}\n` +
-                (keys.length ? `   ${keys.map((k, i) => `[${i + 1}] ${maskApiKey(k)}`).join('\n   ')}\n` : `   ✦ *KEY* :: NOT_SET\n`) +
-                `   ✦ *ROUTING* :: ${keys.length ? 'YOUR_GEMINI_KEYS' : 'OWNER_DEFAULT_CHAIN'}\n` +
-                `   ✦ *ISOLATION* :: your session only\n\n` +
-                `   Add key: *.pluginkey <key>*\n` +
-                `   Replace: *.pluginkey set keyA,keyB*\n` +
-                `   Remove: *.pluginkey off*\n\n` +
-                `   " Your mind, your keys. "`
-            ), msg);
-            return;
-        }
-        if (arg.toLowerCase() === 'off' || arg.toLowerCase() === 'remove') {
-            cfg.geminiApiKey = '';
-            saveBotConfig(phoneNumber, cfg);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *PLUGIN_KEY_SEVERED* █▓▒░\n\n` +
-                `   ✦ *STATUS* :: REMOVED\n` +
-                `   ✦ *ROUTING* :: OWNER_DEFAULT_CHAIN\n\n` +
-                `   " The key returns to silence. "`
-            ), msg);
-            return;
-        }
-        // 🔑 APPEND semantics: .pluginkey <key> ADDS to the user's key pool
-        // (first-typed key is tried first). .pluginkey set <keys> REPLACES the
-        // whole pool. .pluginkey off clears it. Keys are per-session — user A's
-        // keys NEVER leak to user B.
-        const setMode = /^set\s+/i.test(arg);
-        const argBody = setMode ? arg.replace(/^set\s+/i, '').trim() : arg;
-        const incoming = splitApiKeys(argBody);
-        const bad = incoming.filter(k => !isValidGeminiKey(k));
-        if (!incoming.length || bad.length) {
-            await safeWaReply(sock, remoteJid, `❌ That does not look like a valid Gemini API key list.\n\nGemini keys usually start with *AIza* or *AQ.* — grab one free at:\nhttps://aistudio.google.com/apikey\n\nThen: *.pluginkey <key1,key2,key3>* (comma-separated, no spaces needed)\n*.pluginkey set <keys>* replaces your current keys`, msg);
-            return;
-        }
-        const existing = splitApiKeys(cfg.geminiApiKey);
-        const merged = setMode ? incoming : [...existing, ...incoming];
-        const finalKeys = [...new Set(merged)]; // dedup, keep first-typed order
-        const added = finalKeys.length - existing.length;
-        cfg.geminiApiKey = finalKeys.join(',');
-        saveBotConfig(phoneNumber, cfg);
-        const modeLabel = setMode ? 'RESET' : (added > 0 ? 'EXTENDED' : 'ALREADY_BOUND');
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *PLUGIN_KEYS_${modeLabel}* █▓▒░\n\n` +
-            `   ✦ *TOTAL* :: ${finalKeys.length}\n` +
-            `   ✦ *ADDED* :: ${setMode ? '-' : added}\n` +
-            `   ${finalKeys.map((k, i) => `[${i + 1}] ${maskApiKey(k)}`).join('\n   ')}\n` +
-            `   ✦ *ROUTING* :: YOUR_GEMINI_KEYS\n` +
-            `   ✦ *ORDER* :: A → B → C (first success wins)\n` +
-            `   ✦ *FALLBACK* :: general .env keys only if ALL yours fail\n` +
-            `   ✦ *SCOPE* :: your session only — other users keep their own\n\n` +
-            `   " The oracle now speaks\n     through your own flames. "`
-        ), msg);
-        return;
-    }
     // ──────────────────────────────────────────────
     // 👥 GROUP COMMANDS
     // ──────────────────────────────────────────────
