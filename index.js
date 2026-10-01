@@ -66,6 +66,7 @@ import { createOwnerOperationCommands } from './src/commands/system/owner-operat
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
+import { createGroupModerationCommands } from './src/commands/group/moderation.js';
 import { createGroupWarningCommands } from './src/commands/group/warnings.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
@@ -3331,6 +3332,17 @@ const commandRegistry = createCommandRegistry([
         isDevNumber,
         isUserGroupAdmin
     }),
+    ...createGroupModerationCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        resolveTargetJid,
+        normalizeJid: jidNormalizedUser,
+        isParticipantAdmin,
+        isDevNumber,
+        mutedUsers,
+        log,
+        logError
+    }),
     ...createGroupWarningCommands({
         safeWaReply,
         buildOmegaTerminal,
@@ -6002,104 +6014,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
             `   Choose what to do below.`
         ), msg);
         await sendMenuPoll(sock, remoteJid, phoneNumber, '✦ ANTIDELETE MATRIX ✦', ['➕ Add Endpoint', '🗑️ Delete Endpoint'], ['ad_add', 'ad_delete']);
-        return;
-    }
-
-    // .mute @user / reply — silence a member in the group (auto-delete their msgs)
-    if (token === '.mute') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply to a message, @mention, or provide a number.\nExample: .mute @user', msg); return; }
-        try {
-            const meta = await sock.groupMetadata(remoteJid);
-            const isSenderAdmin = isParticipantAdmin(meta, senderJid);
-            if (!isSenderAdmin) { await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg); return; }
-            const key = `${phoneNumber}:${remoteJid}`;
-            const set = mutedUsers.get(key) || new Set();
-            set.add(jidNormalizedUser(target));
-            mutedUsers.set(key, set);
-            const num = target.split('@')[0];
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *VOCAL_SEAL* █▓▒░\n\n` +
-                `   ✦ *TARGET* :: +${num}\n` +
-                `   ✦ *STATE* :: MUTED\n\n` +
-                `   " Their voice is\n     bound in silence. "`
-            ), msg);
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // .unmute @user / reply — unsilence a member
-    if (token === '.unmute') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const target = resolveTargetJid(msg, args);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Reply to a message, @mention, or provide a number.\nExample: .unmute @user', msg); return; }
-        try {
-            const meta = await sock.groupMetadata(remoteJid);
-            const isSenderAdmin = isParticipantAdmin(meta, senderJid);
-            if (!isSenderAdmin) { await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg); return; }
-            const key = `${phoneNumber}:${remoteJid}`;
-            const set = mutedUsers.get(key) || new Set();
-            set.delete(jidNormalizedUser(target));
-            mutedUsers.set(key, set);
-            const num = target.split('@')[0];
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ░▒▓█ *VOCAL_RELEASE* █▓▒░\n\n` +
-                `   ✦ *TARGET* :: +${num}\n` +
-                `   ✦ *STATE* :: UNMUTED\n\n` +
-                `   " Their voice is\n     returned. "`
-            ), msg);
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // 🔒 .lock / .unlock — WhatsApp "announcement" mode for the group.
-    // Locked = ONLY admins can send messages. Unlocked = everyone again.
-    // (NOT the same as .mute — mute silences ONE user; lock freezes the
-    // whole group. The help AI has been taught the difference.)
-    if (token === '.lock' || token === '.lockgc' || token === '.unlock' || token === '.unlockgc') {
-        const locking = token === '.lock' || token === '.lockgc';
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Groups only.', msg); return; }
-        try {
-            const meta = await sock.groupMetadata(remoteJid);
-            const isSenderAdmin = isParticipantAdmin(meta, senderJid) || isSenderOwner || isDevNumber(senderJid);
-            if (!isSenderAdmin) { await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg); return; }
-            await sock.groupSettingUpdate(remoteJid, locking ? 'announcement' : 'not_announcement');
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                locking
-                    ? `   ░▒▓█ *GROUP LOCKED* █▓▒░\n\n` +
-                      `   ✦ *STATE* :: ADMINS_ONLY\n` +
-                      `   ✦ *ACTION* :: VOICE_SEAL\n\n` +
-                      `   Only admins can send\n` +
-                      `   messages now.\n\n` +
-                      `   " the gates close.\n     only the chosen speak. "`
-                    : `   ░▒▓█ *GROUP UNLOCKED* █▓▒░\n\n` +
-                      `   ✦ *STATE* :: OPEN_FLOOR\n` +
-                      `   ✦ *ACTION* :: VOICE_RELEASE\n\n` +
-                      `   Everyone can send\n` +
-                      `   messages again.\n\n` +
-                      `   " the gates open.\n     the void listens to all. "`
-            ), msg);
-            log('GROUP', `${phoneNumber}: group ${locking ? 'LOCKED' : 'UNLOCKED'} by ${senderJid} in ${remoteJid}`);
-        } catch (err) {
-            logError('GROUP', `${phoneNumber}: group lock toggle failed`, err);
-            await safeWaReply(sock, remoteJid, `❌ Failed: ${err?.message || err}`, msg);
-        }
-        return;
-    }
-
-    // .listmuted — list muted users in the group
-    if (token === '.listmuted') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        const key = `${phoneNumber}:${remoteJid}`;
-        const set = mutedUsers.get(key) || new Set();
-        const list = set.size ? [...set].map(j => `   • +${j.split('@')[0]}`).join('\n') : '   • _none muted_';
-        await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-            `   ░▒▓█ *SILENCE_REGISTRY* █▓▒░\n\n` +
-            `   ✦ *MUTED* :: ${set.size}\n\n` +
-            `${list}\n\n` +
-            `   " The silenced remember. "`
-        ), msg);
         return;
     }
 
