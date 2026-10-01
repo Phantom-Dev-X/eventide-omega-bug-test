@@ -3,13 +3,15 @@
 The repository is being migrated from a single large runtime file into small,
 testable modules. Behaviour must remain unchanged during extraction.
 
-## Current foundation
+## Extracted modules
 
 - `src/config/env.js` — environment parsing and runtime paths
 - `src/config/defaults.js` — default per-session bot configuration
 - `src/core/logger.js` — stable structured console logging
 - `src/core/state.js` — process-local Maps shared by runtime features
 - `src/core/context.js` — dependency container for future feature modules
+- `src/whatsapp/pairing.js` — Telegram/web pairing and startup restoration coordinator
+- `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
 
@@ -21,8 +23,8 @@ imports and makes modules independently testable.
 
 ## Migration order
 
-1. Core configuration, logging and state (current phase)
-2. Pairing and session lifecycle
+1. Core configuration, logging and state (complete)
+2. Pairing and session lifecycle (in progress)
 3. Incoming message pipeline
 4. Command registry and simple system commands
 5. Commands migrated one category at a time

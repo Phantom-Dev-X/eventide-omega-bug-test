@@ -47,6 +47,8 @@ import { initWebApp } from './webApp.js';
 import { startLocalBackups, runLocalBackup } from './backup.js';
 import { parseInviteOrJid, listParticipatingGroups, resolveAndJoinTarget } from './wardConfig.js';
 import { createEnvironmentConfig } from './src/config/env.js';
+import { createPairingService } from './src/whatsapp/pairing.js';
+import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
 import {
@@ -2296,130 +2298,30 @@ function fetchBuffer(url) {
 function loadSharp() { try { return require('sharp'); } catch (_) { return null; } }
 function loadQrcode() { try { return require('qrcode'); } catch (_) { return null; } }
 
-function getStoredSessionDirectories(dirPath = AUTH_DIR) {
-    if (!fs.existsSync(dirPath)) return [];
-    return fs.readdirSync(dirPath).filter(name => {
-        const full = path.join(dirPath, name);
-        try { return fs.statSync(full).isDirectory(); }
-        catch { return false; }
-    });
-}
+const sessionStore = createSessionStore({
+    authDir: AUTH_DIR,
+    userMapFile: USER_MAP_FILE,
+    telegramUsers,
+    ensureDir,
+    safeRm,
+    isSupabaseEnabled,
+    saveUserToSupabase,
+    deleteUserFromSupabase,
+    loadAllUsersFromSupabase,
+    log,
+    logError
+});
 
-function countStoredSessions() {
-    return getStoredSessionDirectories(AUTH_DIR).length;
-}
-
-function normalizeAuthDirStructure() {
-    ensureDir(AUTH_DIR);
-    const nestedSessionsDir = path.join(AUTH_DIR, 'sessions');
-    if (!fs.existsSync(nestedSessionsDir)) return;
-    let nestedDirs = [];
-    try { nestedDirs = getStoredSessionDirectories(nestedSessionsDir); }
-    catch { nestedDirs = []; }
-
-    const rootDirs = getStoredSessionDirectories(AUTH_DIR);
-    if (!nestedDirs.length) return;
-
-    const onlyNestedRoot = rootDirs.length === 1 && rootDirs[0] === 'sessions';
-    if (!onlyNestedRoot) return;
-
-    log('STARTUP', 'Detected nested sessions/sessions structure from old restore. Flattening it now...');
-    for (const item of fs.readdirSync(nestedSessionsDir)) {
-        const from = path.join(nestedSessionsDir, item);
-        const to = path.join(AUTH_DIR, item);
-        safeRm(to);
-        fs.renameSync(from, to);
-    }
-    safeRm(nestedSessionsDir);
-    log('STARTUP', 'Nested sessions directory fixed successfully.');
-}
-
-function findTelegramChatIdByPhone(phoneNumber) {
-    for (const [chatId, user] of telegramUsers.entries()) {
-        if (user?.phoneNumber === phoneNumber) return chatId;
-    }
-    return null;
-}
-
-function setTelegramUserState(chatId, { phoneNumber = null, status = 'disconnected', sock = null }) {
-    if (chatId === null || typeof chatId === 'undefined') return;
-    telegramUsers.set(chatId, { phoneNumber, status, sock });
-    if (isSupabaseEnabled()) {
-        saveUserToSupabase(chatId, phoneNumber, status);
-    }
-}
-
-function clearTelegramUser(chatId) {
-    if (chatId === null || typeof chatId === 'undefined') return;
-    telegramUsers.set(chatId, { phoneNumber: null, status: 'disconnected', sock: null });
-    if (isSupabaseEnabled()) {
-        deleteUserFromSupabase(chatId);
-    }
-}
-
-function saveUserMap() {
-    const map = {};
-    for (const [chatId, user] of telegramUsers.entries()) {
-        if (user?.phoneNumber) {
-            map[String(chatId)] = {
-                phoneNumber: user.phoneNumber,
-                status: user.status || 'disconnected'
-            };
-        }
-    }
-
-    try {
-        fs.writeFileSync(USER_MAP_FILE, JSON.stringify(map, null, 2));
-        log('STATE', `Saved user map with ${Object.keys(map).length} user(s)`);
-    } catch (err) {
-        logError('STATE', 'Failed to save user map', err);
-    }
-}
-
-async function loadUserMap({ clearExisting = false } = {}) {
-    if (clearExisting) telegramUsers.clear();
-
-    // Try Supabase first if enabled
-    if (isSupabaseEnabled()) {
-        const dbMap = await loadAllUsersFromSupabase();
-        if (dbMap) {
-            for (const [chatIdText, data] of Object.entries(dbMap)) {
-                const chatId = Number(chatIdText);
-                if (!Number.isFinite(chatId)) continue;
-                telegramUsers.set(chatId, {
-                    phoneNumber: data?.phoneNumber || null,
-                    status: data?.status || 'disconnected',
-                    sock: null
-                });
-            }
-            log('STATE', `Loaded ${telegramUsers.size} user(s) from Supabase.`);
-            return;
-        }
-    }
-
-    // Fallback to local user_map.json file
-    if (!fs.existsSync(USER_MAP_FILE)) {
-        log('STATE', 'user_map.json not found. Continuing without stored Telegram user map.');
-        return;
-    }
-
-    try {
-        const raw = fs.readFileSync(USER_MAP_FILE, 'utf8');
-        const parsed = JSON.parse(raw);
-        for (const [chatIdText, data] of Object.entries(parsed)) {
-            const chatId = Number(chatIdText);
-            if (!Number.isFinite(chatId)) continue;
-            telegramUsers.set(chatId, {
-                phoneNumber: data?.phoneNumber || null,
-                status: data?.status || 'disconnected',
-                sock: null
-            });
-        }
-        log('STATE', `Loaded ${telegramUsers.size} user(s) from user_map.json`);
-    } catch (err) {
-        logError('STATE', 'Failed to load user map', err);
-    }
-}
+const {
+    getStoredSessionDirectories,
+    countStoredSessions,
+    normalizeAuthDirStructure,
+    findTelegramChatIdByPhone,
+    setTelegramUserState,
+    clearTelegramUser,
+    saveUserMap,
+    loadUserMap
+} = sessionStore;
 
 function isDev(chatId) {
     if (DEV_IDS.length === 0) return true;
@@ -8659,117 +8561,34 @@ function setupMessageHandler(sock, phoneNumber, tgId) {
     });
 }
 
-async function initiatePairing(tgId, phoneNumber) {
-    log('PAIR', `Starting pairing flow for ${phoneNumber} (Telegram ${tgId})`);
+const pairingService = createPairingService({
+    authDirRoot: AUTH_DIR,
+    maxUsers: MAX_USERS,
+    telegramUsers,
+    webPairSessions,
+    countStoredSessions,
+    getStoredSessionDirectories,
+    normalizeAuthDirStructure,
+    findTelegramChatIdByPhone,
+    setTelegramUserState,
+    clearTelegramUser,
+    saveUserMap,
+    ensureDir,
+    safeTgSend,
+    createSocketForSession,
+    isSupabaseEnabled,
+    getAllSessionPhoneNumbers,
+    downloadSessionFromSupabase,
+    loadAuthState: useMultiFileAuthState,
+    log,
+    logError
+});
 
-    const sessionCount = countStoredSessions();
-    if (sessionCount >= MAX_USERS) {
-        await safeTgSend(tgId, `🚫 *Server Full!*\n\nMax users reached: ${MAX_USERS}`);
-        clearTelegramUser(tgId);
-        saveUserMap();
-        return;
-    }
-
-    for (const [chatId, user] of telegramUsers.entries()) {
-        if (chatId !== tgId && user?.phoneNumber === phoneNumber && user?.status !== 'disconnected') {
-            await safeTgSend(chatId, '❌ That number is already in use on this server.');
-            clearTelegramUser(tgId);
-            saveUserMap();
-            return;
-        }
-    }
-
-    const authDir = path.join(AUTH_DIR, phoneNumber);
-    ensureDir(authDir);
-    setTelegramUserState(tgId, { phoneNumber, status: 'pairing', sock: null });
-    saveUserMap();
-
-    try {
-        await createSocketForSession({ phoneNumber, tgId, authDir, isRestore: false });
-        log('PAIR', `${phoneNumber}: pairing socket created successfully.`);
-    } catch (err) {
-        logError('PAIR', `${phoneNumber}: initiatePairing failed`, err);
-        clearTelegramUser(tgId);
-        saveUserMap();
-        throw err;
-    }
-}
-
-// 💻 WEB PAIRING — initiate pairing for a phone number from the web page.
-// Returns an object { ok, code?, error? }. Works without Telegram.
-async function initiateWebPairing(phoneNumber) {
-    log('WEBPAIR', `Starting web pairing flow for ${phoneNumber}`);
-    try {
-        const sessionCount = countStoredSessions();
-        if (sessionCount >= MAX_USERS) {
-            return { ok: false, error: `Server full. Max users reached: ${MAX_USERS}` };
-        }
-        // Check the number isn't already in use (scan stored session dirs)
-        const dirs = getStoredSessionDirectories(AUTH_DIR);
-        if (dirs.includes(phoneNumber)) {
-            return { ok: false, error: 'That number already has a session. Use /disconnect or delete it.' };
-        }
-
-        const authDir = path.join(AUTH_DIR, phoneNumber);
-        ensureDir(authDir);
-        // Mark that we are waiting for a code on the web side
-        webPairSessions.set(phoneNumber, { code: null, status: 'pending', createdAt: Date.now() });
-
-        await createSocketForSession({ phoneNumber, tgId: null, authDir, isRestore: false });
-        log('WEBPAIR', `${phoneNumber}: pairing socket created (web).`);
-        return { ok: true };
-    } catch (err) {
-        logError('WEBPAIR', `${phoneNumber}: web pairing failed`, err);
-        webPairSessions.delete(phoneNumber);
-        return { ok: false, error: err?.message || 'Pairing failed' };
-    }
-}
-
-async function restoreAllSessions() {
-    normalizeAuthDirStructure();
-    ensureDir(AUTH_DIR);
-
-    let sessionDirs = getStoredSessionDirectories(AUTH_DIR);
-
-    if (isSupabaseEnabled()) {
-        log('RESTORE', 'Fetching session list from Supabase for startup recovery...');
-        const dbPhoneNumbers = await getAllSessionPhoneNumbers();
-        const combined = new Set([...sessionDirs, ...dbPhoneNumbers]);
-        sessionDirs = Array.from(combined);
-    }
-
-    if (!sessionDirs.length) {
-        log('RESTORE', 'No local or database session folders found to reconnect.');
-        return 0;
-    }
-
-    let restoredCount = 0;
-    for (const phoneNumber of sessionDirs) {
-        const authDir = path.join(AUTH_DIR, phoneNumber);
-        try {
-            if (isSupabaseEnabled()) {
-                await downloadSessionFromSupabase(phoneNumber, authDir);
-            }
-
-            const { state } = await useMultiFileAuthState(authDir);
-            if (!state?.creds?.registered) {
-                log('RESTORE', `${phoneNumber}: credentials are not registered. Skipping this folder.`);
-                continue;
-            }
-
-            const tgId = findTelegramChatIdByPhone(phoneNumber);
-            await createSocketForSession({ phoneNumber, tgId, authDir, isRestore: true });
-            restoredCount += 1;
-            log('RESTORE', `${phoneNumber}: socket recreation queued successfully${tgId ? ` (TG ${tgId})` : ''}.`);
-        } catch (err) {
-            logError('RESTORE', `${phoneNumber}: failed to restore session`, err);
-        }
-    }
-
-    return restoredCount;
-}
-
-// ──────────────────────────────────────────────
+const {
+    initiatePairing,
+    initiateWebPairing,
+    restoreAllSessions
+} = pairingService;
 
 // ──────────────────────────────────────────────
 // 📱 TELEGRAM COMMANDS (only registered when Telegram is enabled)
