@@ -6313,7 +6313,11 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         const qSender = q?.participant || q?.remoteJid || '';
         if (qSender) return qSender;
         const digits = normalizeDigits(msgArg || '');
-        return digits.length >= 7 ? digits : null;
+        if (digits.length >= 7) return digits;
+        // @mention: the display text is useless ("@Patrick") — the real JID
+        // rides in contextInfo.mentionedJid (same pattern as .warn/.kick).
+        const mentioned = Array.isArray(q?.mentionedJid) ? q.mentionedJid[0] : null;
+        return mentioned ? jidNormalizedUser(mentioned) : null;
     };
 
     if (token === '.addsudo' || token === '.delsudo' || token === '.removesudo' || token === '.sudos' || token === '.listsudos') {
@@ -9160,7 +9164,18 @@ async function startWebTunnel(port) {
             fs.chmodSync(binPath, 0o755);
             log('TUNNEL', `cloudflared saved (${Math.round(buf.length / 1048576)}MB)`);
         }
-        tunnelChild = spawn(binPath, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const tunnelToken = String(process.env.CLOUDFLARE_TUNNEL_TOKEN || '').trim();
+        if (tunnelToken) {
+            // NAMED tunnel — permanent address (your domain mapped in the
+            // Cloudflare dashboard). No URL rotation, no DM needed.
+            log('TUNNEL', 'named tunnel starting (permanent URL from your Cloudflare dashboard)');
+            tunnelChild = spawn(binPath, ['tunnel', '--no-autoupdate', 'run', '--token', tunnelToken], { stdio: ['ignore', 'pipe', 'pipe'] });
+            tunnelChild.stderr.on('data', d => {
+                if (/Registered tunnel connection/i.test(String(d))) log('TUNNEL', '✅ named tunnel connected — permanent URL is live');
+            });
+        } else {
+            tunnelChild = spawn(binPath, ['tunnel', '--url', `http://127.0.0.1:${port}`, '--no-autoupdate'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        }
         const huntUrl = chunk => {
             const m = String(chunk).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
             if (m && tunnelUrl !== m[0]) {
