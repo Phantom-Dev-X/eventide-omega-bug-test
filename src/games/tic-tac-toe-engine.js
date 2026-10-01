@@ -4,8 +4,9 @@
  * board rendering, timers, and the full lifecycle (challenge, open lobby,
  * moves, bot turns). Command routing, challenge-argument parsing, and
  * setup-poll orchestration stay in src/commands/game/tic-tac-toe.js; the
- * shared poll-vote dispatcher (`handleMenuVote`) stays in index.js and uses
- * the functions returned here directly.
+ * shared poll-vote dispatcher (`handleMenuVote`, in
+ * src/whatsapp/menu-vote-service.js) uses the functions returned here
+ * directly.
  */
 export function createTicTacToeEngine(deps) {
     const {
