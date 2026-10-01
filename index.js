@@ -64,6 +64,7 @@ import { createAccountSystemCommands } from './src/commands/system/account.js';
 import { createAccountToolCommands } from './src/commands/system/account-tools.js';
 import { createOwnerOperationCommands } from './src/commands/system/owner-operations.js';
 import { createUtilitySystemCommands } from './src/commands/system/utilities.js';
+import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createSessionStore } from './src/services/session-store.js';
 import { DEFAULT_BOT_CONFIG } from './src/config/defaults.js';
 import { log, logError } from './src/core/logger.js';
@@ -3312,6 +3313,13 @@ const commandRegistry = createCommandRegistry([
         resolveTargetJid,
         isDevNumber,
         logError
+    }),
+    ...createGroupMembershipCommands({
+        safeWaReply,
+        buildOmegaTerminal,
+        isParticipantAdmin,
+        normalizeJid: jidNormalizedUser,
+        logError
     })
 ]);
 
@@ -5875,215 +5883,6 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // ──────────────────────────────────────────────
     // 👥 GROUP COMMANDS
     // ──────────────────────────────────────────────
-
-    // 1. .join <invite-link> (Join a group via link)
-    if (token === '.join') {
-        const link = args[0];
-        if (!link) {
-            await safeWaReply(sock, remoteJid, '❌ Please provide a valid WhatsApp group invite link.\n\n*Example*: .join https://chat.whatsapp.com/L2mX...', msg);
-            return;
-        }
-        try {
-            const code = link.split('chat.whatsapp.com/')[1];
-            if (!code) {
-                await safeWaReply(sock, remoteJid, '❌ Invalid group invite link format.', msg);
-                return;
-            }
-            await sock.groupAcceptInvite(code);
-            await safeWaReply(sock, remoteJid, '✅ Successfully requested/joined the group!', msg);
-        } catch (err) {
-            logError('GROUP-JOIN', 'Failed to join group', err);
-            await safeWaReply(sock, remoteJid, `❌ Failed to join group. Error: ${err.message || err}`, msg);
-        }
-        return;
-    }
-
-    // 2. .add <phone-number> (Add member to group)
-    if (token === '.add') {
-        if (!remoteJid.endsWith('@g.us')) {
-            await safeWaReply(sock, remoteJid, '❌ This command can only be used inside groups.', msg);
-            return;
-        }
-        const targetNumber = args[0]?.replace(/\D/g, '');
-        if (!targetNumber) {
-            await safeWaReply(sock, remoteJid, '❌ Please provide a valid phone number with country code.\n\n*Example*: .add 2348012345678', msg);
-            return;
-        }
-        const targetJid = `${targetNumber}@s.whatsapp.net`;
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            
-            const isSenderAdmin = isParticipantAdmin(metadata, senderJid);
-            const isBotAdmin = isParticipantAdmin(metadata, sock.user.id);
-
-            if (!isSenderAdmin) {
-                await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin to use this command.', msg);
-                return;
-            }
-            if (!isBotAdmin) {
-                await safeWaReply(sock, remoteJid, '⚠️ I need Admin permissions in this group to add members.', msg);
-                return;
-            }
-
-            await sock.groupParticipantsUpdate(remoteJid, [targetJid], 'add');
-            await safeWaReply(sock, remoteJid, `✅ Successfully added @${targetNumber} to the group!`, msg);
-        } catch (err) {
-            logError('GROUP-ADD', 'Failed to add participant', err);
-            await safeWaReply(sock, remoteJid, `❌ Failed to add member. Error: ${err.message || err}`, msg);
-        }
-        return;
-    }
-
-    // 3. .kick <phone-number | @mention | reply> (Kick participant)
-    if (token === '.kick') {
-        if (!remoteJid.endsWith('@g.us')) {
-            await safeWaReply(sock, remoteJid, '❌ This command can only be used inside groups.', msg);
-            return;
-        }
-
-        let targetJid = null;
-        let targetNumber = null;
-
-        // Method A: Check quoted message participant
-        const quotedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
-        if (quotedParticipant) {
-            targetJid = jidNormalizedUser(quotedParticipant);
-            targetNumber = targetJid.split('@')[0];
-        }
-
-        // Method B: Check mentions
-        const mentionedJid = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
-        if (!targetJid && mentionedJid) {
-            targetJid = jidNormalizedUser(mentionedJid);
-            targetNumber = targetJid.split('@')[0];
-        }
-
-        // Method C: Check phone number argument
-        if (!targetJid && args[0]) {
-            const numClean = args[0].replace(/\D/g, '');
-            if (numClean.length >= 10) {
-                targetJid = `${numClean}@s.whatsapp.net`;
-                targetNumber = numClean;
-            }
-        }
-
-        if (!targetJid) {
-            await safeWaReply(sock, remoteJid, '❌ Please reply to a message, mention (@user) or provide a phone number with country code.\n\n*Example*: .kick @user\n*Example*: .kick 2348012345678', msg);
-            return;
-        }
-
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            
-            const isSenderAdmin = isParticipantAdmin(metadata, senderJid);
-            const isBotAdmin = isParticipantAdmin(metadata, sock.user.id);
-
-            if (!isSenderAdmin) {
-                await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin to kick members.', msg);
-                return;
-            }
-            if (!isBotAdmin) {
-                await safeWaReply(sock, remoteJid, '⚠️ I need Admin permissions in this group to kick members.', msg);
-                return;
-            }
-
-            await sock.groupParticipantsUpdate(remoteJid, [targetJid], 'remove');
-            await safeWaReply(sock, remoteJid, `👢 Successfully kicked @${targetNumber} from the group!`, msg);
-        } catch (err) {
-            logError('GROUP-KICK', 'Failed to kick participant', err);
-            await safeWaReply(sock, remoteJid, `❌ Failed to kick member. Error: ${err.message || err}`, msg);
-        }
-        return;
-    }
-
-    // 4. .link (Fetch group invite link)
-    if (token === '.link') {
-        if (!remoteJid.endsWith('@g.us')) {
-            await safeWaReply(sock, remoteJid, '❌ This command can only be used inside groups.', msg);
-            return;
-        }
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            
-            const isSenderAdmin = isParticipantAdmin(metadata, senderJid);
-            const isBotAdmin = isParticipantAdmin(metadata, sock.user.id);
-
-            if (!isSenderAdmin) {
-                await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin to fetch the group link.', msg);
-                return;
-            }
-            if (!isBotAdmin) {
-                await safeWaReply(sock, remoteJid, '⚠️ I need Admin permissions in this group to fetch the invite link.', msg);
-                return;
-            }
-
-            const code = await sock.groupInviteCode(remoteJid);
-            const inviteLink = `https://chat.whatsapp.com/${code}`;
-            await safeWaReply(sock, remoteJid, `🔗 *Group Invite Link*:\n\n${inviteLink}`, msg);
-        } catch (err) {
-            logError('GROUP-LINK', 'Failed to fetch invite link', err);
-            await safeWaReply(sock, remoteJid, `❌ Failed to fetch invite link. Error: ${err.message || err}`, msg);
-        }
-        return;
-    }
-
-    // 5. .revoke — reset group invite link
-    if (token === '.revoke') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            const isSenderAdmin = isParticipantAdmin(metadata, senderJid);
-            if (!isSenderAdmin) { await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg); return; }
-            await sock.groupRevokeInvite(remoteJid);
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `   ╾━━━ BOND_SEVERED ━━━╼\n\n` +
-                `   🔗 *OLD LINK* → DEAD\n` +
-                `   🔒 *NEW LINK* → GENERATED\n\n` +
-                `   " The old path is closed. "`
-            ), msg);
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // 6. .promote @user — make admin
-    if (token === '.promote') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        let target = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || (args[0] ? `${args[0].replace(/\D/g,'')}@s.whatsapp.net` : null);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Mention or provide a number. Example: .promote @user', msg); return; }
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            const isSenderAdmin = isParticipantAdmin(metadata, senderJid);
-            if (!isSenderAdmin) { await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg); return; }
-            await sock.groupParticipantsUpdate(remoteJid, [target], 'promote');
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `      ◢◤ *RANK_RECALIBRATION* ◢◤\n\n` +
-                `      📊 *OLD* : MEMBER\n` +
-                `      📈 *NEW* : ADMINISTRATOR\n\n` +
-                `   " Power is granted. "`
-            ), msg);
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
-
-    // 7. .demote @user — remove admin
-    if (token === '.demote') {
-        if (!remoteJid.endsWith('@g.us')) { await safeWaReply(sock, remoteJid, '❌ Only works inside a group.', msg); return; }
-        let target = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || (args[0] ? `${args[0].replace(/\D/g,'')}@s.whatsapp.net` : null);
-        if (!target) { await safeWaReply(sock, remoteJid, '❌ Mention or provide a number. Example: .demote @user', msg); return; }
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            const isSenderAdmin = isParticipantAdmin(metadata, senderJid);
-            if (!isSenderAdmin) { await safeWaReply(sock, remoteJid, '⛔ You must be a Group Admin.', msg); return; }
-            await sock.groupParticipantsUpdate(remoteJid, [target], 'demote');
-            await safeWaReply(sock, remoteJid, buildOmegaTerminal(
-                `      ◢◤ *RANK_RECALIBRATION* ◢◤\n\n` +
-                `      📊 *OLD* : ADMINISTRATOR\n` +
-                `      📉 *NEW* : MEMBER\n\n` +
-                `   " Power is reclaimed. "`
-            ), msg);
-        } catch (err) { await safeWaReply(sock, remoteJid, `❌ ${err?.message || err}`, msg); }
-        return;
-    }
 
     // 8. .groupinfo — group details
     if (token === '.groupinfo') {

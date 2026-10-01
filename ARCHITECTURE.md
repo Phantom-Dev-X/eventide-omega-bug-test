@@ -27,6 +27,7 @@ testable modules. Behaviour must remain unchanged during extraction.
 - `src/commands/system/account-tools.js` — profile-picture retrieval, view-once recovery, and privileged contact controls
 - `src/commands/system/owner-operations.js` — privileged backup, process control, reconnect, and logout operations with injected side-effect boundaries
 - `src/commands/system/utilities.js` — sticker/image conversion, QR generation, calculator, and Base64 utilities
+- `src/commands/group/membership.js` — group joining, member changes, invite links, and administrator rank changes
 - `src/services/session-store.js` — session-directory normalization and Telegram user-map persistence
 - `scripts/check-syntax.js` — syntax validation for all JavaScript files
 - `tests/` — Node built-in unit tests
