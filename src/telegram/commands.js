@@ -164,6 +164,7 @@ export function createTelegramCommandService(deps) {
     //   /unbug <receiver>           → auto: every active bot with tracked sends to that number
     //   /unbug <sender> <receiver>  → explicit: delete through the bot that SENT the bug
     //   /unbug all                  → clean every tracked target (end-of-campaign sweep)
+    //   /unbug fast <any of the above> → EMERGENCY pace: 1s between deletes
     // WhatsApp rule: only the account that SENT a message can revoke it, so the
     // delete always goes through the bot number that fired the payload — the
     // sender is written into the ledger (bug_sends.json) at send time.
@@ -172,12 +173,16 @@ export function createTelegramCommandService(deps) {
         log('TELEGRAM', `/unbug from ${chatId}`);
         if (!(await requireAdminOrExplain(chatId))) return;
 
-        const parts = (msg.text || '').trim().split(/\s+/).slice(1);
+        let parts = (msg.text || '').trim().split(/\s+/).slice(1);
+        // "fast" as the first word = emergency pace: 1s between deletes
+        // instead of 3s — for when a live hit needs cleaning RIGHT NOW.
+        const FAST = parts[0]?.toLowerCase() === 'fast';
+        if (FAST) parts = parts.slice(1);
         if (!parts.length) {
             await safeTgSend(chatId,
                 '🧹 *Unbug — remove sent bug messages*\n\n' +
-                'Usage:\n`/unbug <receiver>` — auto (any of your bots)\n`/unbug <sender> <receiver>` — through the bot that sent it\n`/unbug all` — clean every tracked target\n\nReceiver can be a number, a group JID, or a group *invite link*.\n\n' +
-                'Deletes bug messages from the last 72h — for everyone, so the target is unbugged too. One message every 3 seconds.');
+                'Usage:\n`/unbug <receiver>` — auto (any of your bots)\n`/unbug <sender> <receiver>` — through the bot that sent it\n`/unbug all` — clean every tracked target\n`/unbug fast <any of the above>` — ⚡ 1s between deletes\n\nReceiver can be a number, a group JID, or a group *invite link*.\n\n' +
+                'Deletes bug messages from the last 72h — for everyone, so the target is unbugged too. One message every 3 seconds — or fast for 1-second emergency pace.');
             return;
         }
 
@@ -253,7 +258,8 @@ export function createTelegramCommandService(deps) {
 
         let total = 0;
         for (const j of jobs) total += j.entries.length;
-        await safeTgSend(chatId, `🧹 Unbugging ${total} message(s) via ${jobs.length} bot session(s), one every 3s (~${Math.ceil(total * 3 / 60)} min). Stay calm…`);
+        const intervalSec = FAST ? 1 : 3;
+        await safeTgSend(chatId, `🧹 Unbugging ${total} message(s) via ${jobs.length} bot session(s), one every ${intervalSec}s${FAST ? ' ⚡ FAST' : ''} (~${Math.ceil(total * intervalSec / 60)} min). Stay calm…`);
 
         let totalDeleted = 0;
         for (const job of jobs) {
@@ -270,7 +276,7 @@ export function createTelegramCommandService(deps) {
                 }
                 // Drop the entry either way so a restart never redoes finished work.
                 saveBugSends(job.phoneNumber, loadBugSends(job.phoneNumber).filter(e => e.id !== entry.id));
-                if (i < job.entries.length - 1) await delay(3000);
+                if (i < job.entries.length - 1) await delay(FAST ? 1000 : 3000);
             }
         }
         await safeTgSend(chatId, `✅ *Unbug complete* — deleted ${totalDeleted}/${total} message(s). The target chat(s) are clean.`);
