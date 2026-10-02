@@ -16,11 +16,9 @@
 // poll+voter so a vote change can clean them up; `buildBugMenuText` renders
 // the shared bug menu.
 //
-// NOTE: buildBugMenuText still references the free variable `currentMode`
-// exactly as it does in index.js today — an upstream bug from d3268bb (the
-// variable lost its defining scope when the text was lifted into a shared
-// builder). Calls throw ReferenceError; preserved verbatim by this extraction.
-//
+// The bug-menu builder receives the current access mode explicitly. This keeps
+// it independent of the old monolithic index.js scope and safe for every caller.
+
 // Conventions: crypto is imported directly; log/logError, the Baileys surface
 // (jidNormalizedUser/decryptPollVote/proto/generateWAMessageFromContent), the
 // config-store loaders, canVoteOnPoll, trimForLog, formatForWhatsApp,
@@ -287,7 +285,7 @@ export function createPollMenuService(deps) {
 
     // 🧪 Shared bug-menu text builder — used by BOTH the .bugmenu command and the
     // menu-poll "BUG MENU" vote, so they always send the exact same reply.
-    function buildBugMenuText(prefix = '.') {
+    function buildBugMenuText(prefix = '.', currentMode = 'public') {
         const date = new Date();
         const uptimeSeconds = Math.floor(process.uptime());
         const hours = Math.floor(uptimeSeconds / 3600);

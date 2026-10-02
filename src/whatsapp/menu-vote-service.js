@@ -15,7 +15,7 @@
 // store, ttt engine surface, warn/antidelete services, menu senders, persona
 // menus) is injected from index.js where those services are wired.
 export function createMenuVoteService(deps) {
-    for (const name of ['applyWardEndpoint', 'buildBugMenuText', 'buildOmegaTerminal', 'buildRuinCommandIndexBox', 'buildRuinConfigMenu', 'buildRuinFunMenu', 'buildRuinGroupMenu', 'buildRuinSystemMenu', 'delay', 'deleteMenuMessages', 'ensureWarnGroup', 'getAntideleteState', 'getTttGame', 'getWarnState', 'handleGameVote', 'listAntideleteEndpoints', 'loadBotConfig', 'loadWarnLog', 'log', 'logError', 'offerGroupPickPoll', 'recordMenuMessage', 'safeWaReply', 'saveBotConfig', 'saveWarnLog', 'saveWarnState', 'sendEclipseMenu', 'sendMenuBanner', 'sendMenuPoll', 'sendRuinMenu', 'tttArmDeadGame', 'tttArmTimer', 'tttClearTimer', 'tttCollectIds', 'tttDeletePoll', 'tttDeleteVotedPoll', 'tttKey', 'tttOpenLobby', 'tttPaint', 'tttResolveLabel', 'tttSamePlayer', 'tttStart', 'tttTryMove']) {
+    for (const name of ['applyWardEndpoint', 'buildBugMenuText', 'buildOmegaTerminal', 'buildRuinCommandIndexBox', 'buildRuinConfigMenu', 'buildRuinFunMenu', 'buildRuinGroupMenu', 'buildRuinSystemMenu', 'delay', 'deleteMenuMessages', 'ensureWarnGroup', 'getAntideleteState', 'getTttGame', 'getWarnState', 'handleGameVote', 'listAntideleteEndpoints', 'loadBotConfig', 'loadBotMode', 'loadWarnLog', 'log', 'logError', 'offerGroupPickPoll', 'recordMenuMessage', 'safeWaReply', 'saveBotConfig', 'saveWarnLog', 'saveWarnState', 'sendEclipseMenu', 'sendMenuBanner', 'sendMenuPoll', 'sendRuinMenu', 'tttArmDeadGame', 'tttArmTimer', 'tttClearTimer', 'tttCollectIds', 'tttDeletePoll', 'tttDeleteVotedPoll', 'tttKey', 'tttOpenLobby', 'tttPaint', 'tttResolveLabel', 'tttSamePlayer', 'tttStart', 'tttTryMove']) {
         if (typeof deps?.[name] !== 'function') {
             throw new Error(`createMenuVoteService: missing required dependency: ${name}`);
         }
@@ -53,6 +53,7 @@ export function createMenuVoteService(deps) {
         handleGameVote,
         listAntideleteEndpoints,
         loadBotConfig,
+        loadBotMode,
         loadWarnLog,
         log,
         logError,
@@ -332,7 +333,7 @@ export function createMenuVoteService(deps) {
                     // Same reply as the .bugmenu command — the shared builder
                     // keeps command list and poll vote perfectly in sync.
                     const bugPrefix = String(loadBotConfig(phoneNumber)?.prefix || '.');
-                    const sent = await sock.sendMessage(remoteJid, { text: buildBugMenuText(bugPrefix) });
+                    const sent = await sock.sendMessage(remoteJid, { text: buildBugMenuText(bugPrefix, loadBotMode(phoneNumber)) });
                     if (sent?.key) recordMenuMessage(replyKey, sent.key);
                     break;
                 }

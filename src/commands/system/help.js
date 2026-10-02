@@ -55,7 +55,10 @@ export function createHelpCommands(deps) {
             aliases: ['bug-menu', 'bugmemu'],
             async execute(context) {
                 const { sock, remoteJid, message, phoneNumber, prefix } = context;
-                const menuText = buildBugMenuText(prefix);
+                const currentMode = typeof context.loadBotMode === 'function'
+                    ? context.loadBotMode(phoneNumber)
+                    : 'public';
+                const menuText = buildBugMenuText(prefix, currentMode);
                 try {
                     await sock.sendMessage(remoteJid, {
                         react: { text: '🎗️', key: message.key }

@@ -850,6 +850,7 @@ const menuVoteService = createMenuVoteService({
     delay,
     safeWaReply,
     loadBotConfig,
+    loadBotMode,
     saveBotConfig,
     sendMenuPoll,
     sendMenuBanner,
@@ -1345,7 +1346,8 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
         args,
         prefix,
         pushName,
-        botConfig
+        botConfig,
+        loadBotMode
     })) return;
 
 
@@ -1355,7 +1357,36 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
 
     const replyText = resolveCommandReply(token, phoneNumber);
     if (!replyText) {
-        log('WA-CMD', `${phoneNumber}: no reply mapped for command ${token}. Ignoring.`);
+        // Give useful feedback instead of silently ignoring typos. Compare only
+        // against registered primary commands and suggest a close match when
+        // the edit distance is small enough to be genuinely helpful.
+        const typed = String(token || '').replace(/^\./, '').toLowerCase();
+        const distance = (a, b) => {
+            const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+            for (let i = 1; i <= a.length; i++) {
+                let previous = row[0];
+                row[0] = i;
+                for (let j = 1; j <= b.length; j++) {
+                    const saved = row[j];
+                    row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
+                    previous = saved;
+                }
+            }
+            return row[b.length];
+        };
+        const candidates = commandRegistry.list().map(cmd => cmd.replace(/^\./, ''));
+        const closest = candidates
+            .map(cmd => ({ cmd, score: distance(typed, cmd) }))
+            .sort((a, b) => a.score - b.score || a.cmd.localeCompare(b.cmd))[0];
+        const limit = typed.length <= 4 ? 1 : Math.max(2, Math.floor(typed.length / 3));
+        const suggestion = closest && closest.score <= limit
+            ? `\n\nDid you mean *${prefix}${closest.cmd}*?`
+            : `\n\nType *${prefix}menu* to view available commands.`;
+        await safeWaReply(sock, remoteJid,
+            `❌ *COMMAND NOT REGISTERED*\n\nThe command *${token}* is not recognized.${suggestion}`,
+            msg
+        );
+        log('WA-CMD', `${phoneNumber}: unknown command ${token}${closest ? `; closest=${closest.cmd}` : ''}.`);
         return;
     }
 

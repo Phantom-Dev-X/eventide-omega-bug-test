@@ -32,6 +32,7 @@ function makeHarness() {
         safeWaReply: recAsync('safeWaReply', { key: { id: 'R1' } }),
         // config store
         loadBotConfig: (phone) => state.botConfig,
+        loadBotMode: () => 'public',
         saveBotConfig: (phone, cfg) => { calls.push(['saveBotConfig', phone, cfg]); state.botConfig = cfg; },
         // poll-menu service
         sendMenuPoll: recAsync('sendMenuPoll', { key: { id: 'NP1' } }),

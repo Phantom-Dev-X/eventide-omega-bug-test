@@ -257,10 +257,8 @@ test('deleteMenuMessages swallows per-message failures', async () => {
 
 // --- buildBugMenuText ---------------------------------------------------------------------
 
-test('buildBugMenuText still carries the upstream free-variable bug (d3268bb) verbatim', () => {
+test('buildBugMenuText renders safely with an explicit or default access mode', () => {
     const { engine } = makeEngine();
-    // currentMode lost its defining scope upstream when the bug-menu text was
-    // lifted into a shared builder. The extraction preserves this exactly;
-    // callers (.bugmenu / the BUG MENU vote) hit this ReferenceError today.
-    assert.throws(() => engine.buildBugMenuText('.'), /currentMode is not defined/);
+    assert.match(engine.buildBugMenuText('.', 'owner'), /𝙼𝙾𝙳𝙴:\* owner/);
+    assert.match(engine.buildBugMenuText('.'), /𝙼𝙾𝙳𝙴:\* public/);
 });
