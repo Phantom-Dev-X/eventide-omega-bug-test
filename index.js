@@ -11,6 +11,7 @@ import makeWASocket, {
     downloadMediaMessage,
     prepareWAMessageMedia,
     generateWAMessageFromContent,
+    generateMessageID,
     proto
 } from 'xzcbailz';
 import pino from 'pino';
@@ -68,6 +69,7 @@ import { createConfigDeleteCommands } from './src/commands/system/config-delete.
 import { createHelpCommands } from './src/commands/system/help.js';
 import { createAiFunCommands } from './src/commands/fun/ai.js';
 import { createTicTacToeCommands } from './src/commands/game/tic-tac-toe.js';
+import { createInteractiveGamesCommands } from './src/commands/game/interactive-games.js';
 import { createOneShotProbeService } from './src/commands/testing/one-shot-probes.js';
 import { createFloodProbeService } from './src/commands/testing/flood-probes.js';
 import { createSandboxPayloadCommands } from './src/commands/testing/sandbox-payloads.js';
@@ -833,6 +835,15 @@ const eclipseInterface = createEclipseInterface({
 });
 const { sendEclipseMenu } = eclipseInterface;
 
+const interactiveGamesCommands = createInteractiveGamesCommands({
+    generateWAMessageFromContent,
+    generateMessageID,
+    jidNormalizedUser,
+    buildOmegaTerminal,
+    log,
+    logError
+});
+
 const menuVoteService = createMenuVoteService({
     log,
     logError,
@@ -1079,6 +1090,7 @@ const commandRegistry = createCommandRegistry([
         logError,
         safeWaReply
     }),
+    ...interactiveGamesCommands,
     ...createTicTacToeCommands({
         getTttGame,
         tttSamePlayer,
