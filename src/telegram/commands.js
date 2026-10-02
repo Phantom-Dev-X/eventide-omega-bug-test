@@ -260,7 +260,10 @@ export function createTelegramCommandService(deps) {
             for (let i = 0; i < job.entries.length; i++) {
                 const entry = job.entries[i];
                 try {
-                    await job.sock.sendMessage(entry.jid, { delete: { remoteJid: entry.jid, fromMe: true, id: entry.id } });
+                    // Status-bug entries live under status@broadcast, not the
+                    // target JID — delete them where they were posted.
+                    const delJid = entry.status ? 'status@broadcast' : entry.jid;
+                    await job.sock.sendMessage(delJid, { delete: { remoteJid: delJid, fromMe: true, id: entry.id } });
                     totalDeleted++;
                 } catch (err) {
                     logError('TEST', `unbug delete failed (${entry.id})`, err);
