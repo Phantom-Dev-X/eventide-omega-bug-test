@@ -311,10 +311,9 @@ export function createMenuAssets(deps) {
 
     ┏━ ✦ ARENA ━┓
       • *.ttt*        premium tic-tac-toe
-      • *.hangman*    gallows  (.hm)
-      • *.chain*      word chain  (.wc)
-      • *.trivia*     quiz  (.quiz)
-      • *.riddle*     guess  (.hint)
+      • *.games*      interactive game hub
+      • *.rps*        rock · paper · scissors
+      • *.roll*       dice  (.dice)
     ┗━━━━━━━━━━━━━┛
 
     ┏━ ✦ ROAST ━┓

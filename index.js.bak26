@@ -35,6 +35,14 @@ import {
     deleteUserFromSupabase,
     loadAllUsersFromSupabase
 } from './supabaseService.js';
+import {
+    initGames,
+    isGamePoll,
+    handleGameVote,
+    handleGameText,
+    handleGameCommand,
+    isGameCommand
+} from './games.js';
 import { initWebApp } from './webApp.js';
 import { startLocalBackups, runLocalBackup } from './backup.js';
 import { parseInviteOrJid, listParticipatingGroups, resolveAndJoinTarget } from './wardConfig.js';
@@ -311,9 +319,7 @@ const {
 // ──────────────────────────────────────────────
 const accessService = createAccessService({
     loadBotConfig,
-    // legacy hangman/chain/trivia/riddle polls removed with games.js; ttt
-    // polls are gated by their own ttt_ prefix check inside the service.
-    isGamePoll: () => false
+    isGamePoll
 });
 const { normalizeDigits, isSudo, canVoteOnPoll } = accessService;
 
@@ -731,7 +737,7 @@ const messageAccessService = createMessageAccessService({
     getTttGame,
     tttIsReplyToBoard,
     tttTryMove,
-    handleGameText: async () => false, // legacy poll games removed with games.js
+    handleGameText,
     findHidetagTrigger,
     log,
     logError
@@ -853,7 +859,7 @@ const menuVoteService = createMenuVoteService({
     buildRuinGroupMenu,
     buildRuinFunMenu,
     buildOmegaTerminal,
-    handleGameVote: async () => false, // legacy poll games removed with games.js
+    handleGameVote,
     getTttGame,
     tttSamePlayer,
     tttResolveLabel,
@@ -1341,6 +1347,11 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     // 🛠️ SYSTEM UTILITIES & OWNER TOOLS
     // ──────────────────────────────────────────────
 
+    if (isGameCommand(token)) {
+        const handled = await handleGameCommand({ sock, phoneNumber, remoteJid, senderJid, token, args });
+        if (handled) return;
+    }
+
     const replyText = resolveCommandReply(token, phoneNumber);
     if (!replyText) {
         log('WA-CMD', `${phoneNumber}: no reply mapped for command ${token}. Ignoring.`);
@@ -1508,6 +1519,15 @@ let httpServer = null;         // express server (closed on shutdown)
 // Commit subjects can be long — keep the WhatsApp card short.
 async function main() {
     const buildStartedAt = Date.now();
+    initGames({
+        sendMenuPoll,
+        buildOmegaTerminal,
+        delay,
+        jidNormalizedUser,
+        log,
+        logError,
+        getQuotedContext
+    });
     ensureDir(AUTH_DIR);
     normalizeAuthDirStructure();
     await loadUserMap({ clearExisting: true });

@@ -70,7 +70,7 @@ export function createHelpVoice(deps) {
     GREET: .greet  .welcome  .goodbye
     SYSTEM: .ping  .uptime  .runtime  .info  .status  .version  .os  .botinfo  .alive  .profile  .session  .sessions  .cmdstats  .qr  .logout  .reconnect  .restart  .shutdown  .gitpull  .backup  .dev  .devnumber  .devcontact
     UTILS: .sticker  .toimg  .vv  .viewonce  .pfp  .gpp  .ggpp  .qr  .calc  .base64  .cancel  .del
-    GAMES (interact by replying to the card/poll the bot sends): .tictactoe/.ttt/.xo  .hangman/.hm  .chain/.wordchain/.wc  .trivia/.quiz  .riddle  .hint
+    GAMES: .games (interactive hub with buttons)  .tictactoe/.ttt/.xo  .rps (rock-paper-scissors)  .roll/.dice
     FUN: .pickup/.rizz  (pickup lines)  .calc  .base64
 
     FEATURE CHEAT SHEET (be exact):
@@ -84,7 +84,7 @@ export function createHelpVoice(deps) {
     • SUDO: 👑 .addsudo (reply to someone's message, or .addsudo 234xxxxxxxxx / @mention) elevates them — sudoes can command the bot even in owner mode. .removesudo/.delsudo revokes, .sudos lists. Persisted per session (Supabase on Render / disk on panel). Sudoes can also vote on menu/game polls (but NEVER on bot-config polls — persona, helpconfig, autoreact/antidelete/warn setups stay owner-only), and .help answers sudoes too.
     • HELP MODE: .help alone toggles help mode ON/OFF — while ON, every message is answered by the help AI and other commands don't run. .help <question> answers once without entering help mode. Times out after 10 min silence.
     • MENU: .menu shows the bound persona's menu. Eclipse: animated terminal + banner + Owners/Group/Fun poll. Ruin: status panel + menu poll (ALL MENU / SYSTEM / CONFIG / GROUP / FUN) — ALL MENU opens the full command index.
-    • GAMES: tic-tac-toe, hangman, word chain, trivia, riddle — the bot sends a poll/card and you reply to THAT message (not loose chat) to play.
+    • GAMES: .games opens the interactive hub (WhatsApp buttons and menus); .ttt is poll-based tic-tac-toe; .rps and .roll are instant button games.
     • PLUGIN KEYS: 👑 .pluginkey <gemini-key1,gemini-key2> attaches the owner's personal Gemini keys (comma-separated, tried in order). Typing it again ADDS; .pluginkey set <keys> replaces; .pluginkey off clears. Their keys always try first; keys never leak between users.
     • MODE: .mode public (everyone can command) / .mode owner (only owner + DEV_NUMBERS). .public and .owner are shortcuts.
     • PREFIX: .setprefix <char> changes the command prefix (e.g. "/" → commands become /menu).
