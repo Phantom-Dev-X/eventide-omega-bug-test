@@ -11,12 +11,20 @@ function createFixture({ fromMe = false, dev = false, groupMember = true } = {})
     const lookups = [];
     const delays = [];
     const sentCalls = {
-        iozk: [], fios: [], crashmsg: [], ioszk: [], crashclick: [], gbhard: []
+        iozk: [], fios: [], crashmsg: [], ioszk: [], crashclick: [], gbhard: [], gbstatus: []
     };
     let lookupResult = [{ exists: true }];
     let lookupError = null;
     let inviteResult = { id: 'resolved@g.us' };
     let inviteError = null;
+    let groupMetadataResult = {
+        participants: [
+            { id: '2348000000001:5@s.whatsapp.net' },
+            { id: '2348555555555@s.whatsapp.net' },
+            { id: '2348666666666@s.whatsapp.net' }
+        ]
+    };
+    let groupMetadataError = null;
     let failAfter = null;
 
     const sock = {
@@ -29,6 +37,10 @@ function createFixture({ fromMe = false, dev = false, groupMember = true } = {})
         async groupGetInviteInfo(code) {
             if (inviteError) throw inviteError;
             return inviteResult;
+        },
+        async groupMetadata(jid) {
+            if (groupMetadataError) throw groupMetadataError;
+            return groupMetadataResult;
         }
     };
 
@@ -55,6 +67,7 @@ function createFixture({ fromMe = false, dev = false, groupMember = true } = {})
         sendIoszkProbe: makeSender('ioszk', n => ({ sent: 60, wireBytes: 456, ids: [`ioszk-${n}`] })),
         sendCrashclickProbe: makeSender('crashclick', n => ({ ids: [`crashclick-${n}`] })),
         sendGbHardProbe: makeSender('gbhard', n => ({ wireBytes: 789, ids: [`gbhard-${n}`] })),
+        sendGbStatusProbe: makeSender('gbstatus', n => ({ wireBytes: 812, ids: [`gbstatus-${n}`] })),
         recordBugSends: (...args) => records.push(args),
         log: (...args) => logs.push(args),
         logError: (...args) => errors.push(args),
@@ -67,6 +80,8 @@ function createFixture({ fromMe = false, dev = false, groupMember = true } = {})
         setLookupError(value) { lookupError = value; },
         setInviteResult(value) { inviteResult = value; },
         setInviteError(value) { inviteError = value; },
+        setGroupMetadata(value) { groupMetadataResult = value; },
+        setGroupMetadataError(value) { groupMetadataError = value; },
         setFailAfter(value) { failAfter = value; },
         baseContext(overrides = {}) {
             return {
@@ -93,11 +108,11 @@ test('unrelated commands are not intercepted', async () => {
 
 test('non-owner non-dev is rejected for every probe command', async () => {
     const fixture = createFixture({ fromMe: false, dev: false });
-    for (const firstWord of ['.crash-iosd', '.frz-iosd', '.andro-nuke', '.ios-zk', '.gb', '.gb-hard']) {
+    for (const firstWord of ['.crash-iosd', '.frz-iosd', '.andro-nuke', '.ios-zk', '.gb', '.gb-hard', '.gb-status']) {
         const handled = await fixture.service.handle(fixture.baseContext({ words: [firstWord], firstWord }));
         assert.equal(handled, true);
     }
-    assert.equal(fixture.replies.length, 6);
+    assert.equal(fixture.replies.length, 7);
     for (const reply of fixture.replies) {
         assert.match(reply.text, /Owner\/dev only/);
     }
@@ -318,6 +333,34 @@ test('gb-hard defaults to ten payloads and reports wire size', async () => {
     }));
     assert.equal(fixture.sentCalls.gbhard.length, 10);
     assert.match(fixture.replies.at(-1).text, /789B wire each/);
+});
+
+test('gb-status targets members via the status pipeline and shields the bot account', async () => {
+    const fixture = createFixture({ fromMe: true });
+    await fixture.service.handle(fixture.baseContext({
+        words: ['.gb-status', 'direct@g.us'],
+        firstWord: '.gb-status'
+    }));
+    assert.equal(fixture.sentCalls.gbstatus.length, 3);
+    const call = fixture.sentCalls.gbstatus[0];
+    assert.equal(call[1], 'direct@g.us');
+    // audience = members MINUS the bot's own account (2348000000001)
+    assert.deepEqual(call[2], ['2348555555555@s.whatsapp.net', '2348666666666@s.whatsapp.net']);
+    // recorded as status entries so /unbug deletes them from status@broadcast
+    assert.deepEqual(fixture.records[0][3], { status: true });
+    assert.match(fixture.replies[0].text, /shielded/i);
+    assert.match(fixture.replies.at(-1).text, /2 member/);
+});
+
+test('gb-status reports missing members instead of firing', async () => {
+    const fixture = createFixture({ fromMe: true });
+    fixture.setGroupMetadata({ participants: [{ id: '2348000000001:5@s.whatsapp.net' }] });
+    await fixture.service.handle(fixture.baseContext({
+        words: ['.gb-status', 'direct@g.us'],
+        firstWord: '.gb-status'
+    }));
+    assert.equal(fixture.sentCalls.gbstatus.length, 0);
+    assert.match(fixture.replies.at(-1).text, /No other members/);
 });
 
 test('gb-hard honors a custom amount capped at 100', async () => {

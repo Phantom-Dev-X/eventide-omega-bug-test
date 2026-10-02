@@ -326,6 +326,7 @@ export function createPollMenuService(deps) {
                 '┃𖤍│➣ *.𝗴𝗯* <invite link> — group ×10',
                 '┃𖤍│➣ *.𝗴𝗯-𝗵𝗮𝗿𝗱* <link> — group app-level ×10',
                 '┃𖤍│➣ *.𝘀𝘁𝗮𝘁𝘂𝘀-𝗯𝘂𝗴* <num> — status kill (self-shielded)',
+                '┃𖤍│➣ *.𝗴𝗯-𝘀𝘁𝗮𝘁𝘂𝘀* <link> — group status kill (shielded)',
                 '┆𖤍╰────↯',
                 '╰┄┄┄┄┄┄┄┄┄┄┄┄┄〩',
                 '',

@@ -663,7 +663,8 @@ const {
     buildTestfffMessage,
     prepareCardImage,
     sendGbHardProbe,
-    sendStatusBugProbe
+    sendStatusBugProbe,
+    sendGbStatusProbe
 } = bugProbeEngine;
 
 const messagePipeline = createMessagePipeline({
@@ -798,6 +799,7 @@ const floodProbeService = createFloodProbeService({
     sendIoszkProbe,
     sendCrashclickProbe,
     sendGbHardProbe,
+    sendGbStatusProbe,
     recordBugSends,
     log,
     logError,
