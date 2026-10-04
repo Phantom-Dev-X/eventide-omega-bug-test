@@ -71,6 +71,7 @@ import { createAiFunCommands } from './src/commands/fun/ai.js';
 import { createTicTacToeCommands } from './src/commands/game/tic-tac-toe.js';
 import { createInteractiveGamesCommands } from './src/commands/game/interactive-games.js';
 import { createOneShotProbeService } from './src/commands/testing/one-shot-probes.js';
+import { createChannelProbeService } from './src/commands/system/channel-probe.js';
 import { createFloodProbeService } from './src/commands/testing/flood-probes.js';
 import { createSandboxPayloadCommands } from './src/commands/testing/sandbox-payloads.js';
 import { createTelegramCommandService } from './src/telegram/commands.js';
@@ -786,6 +787,14 @@ const oneShotProbeService = createOneShotProbeService({
     logError
 });
 
+const channelProbeService = createChannelProbeService({
+    normalizeJid: jidNormalizedUser,
+    isDevNumber,
+    safeWaReply,
+    log,
+    logError
+});
+
 const floodProbeService = createFloodProbeService({
     normalizeJid: jidNormalizedUser,
     isDevNumber,
@@ -1238,6 +1247,7 @@ async function handleWhatsAppMessage(sock, msg, phoneNumber, tgId, eventType) {
     };
     if (await oneShotProbeService.handle(earlyProbeContext)) return;
     if (await floodProbeService.handle(earlyProbeContext)) return;
+    if (await channelProbeService.handle(earlyProbeContext)) return;
 
     const continueToDispatch = await messageMiddleware.runMessageMiddleware({
         sock,
