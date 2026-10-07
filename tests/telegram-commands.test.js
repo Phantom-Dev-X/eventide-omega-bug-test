@@ -86,6 +86,29 @@ function createFixture({ isAdmin = true } = {}) {
     };
 }
 
+test('/sessions lists live sockets with names and TG links', async () => {
+    const fixture = createFixture();
+    fixture.waSessions.set('2348111111111', {
+        sock: { user: { id: '2348111111111:7@s.whatsapp.net', name: 'Alpha Bot' } },
+        telegramChatId: 555
+    });
+    fixture.waSessions.set('2348222222222', { sock: {} });
+    await fixture.service.handleSessions({ chat: { id: 1 } });
+    const text = fixture.sent.at(-1).text;
+    assert.match(text, /2 active/);
+    assert.match(text, /🟢 \+2348111111111 — Alpha Bot · TG linked/);
+    assert.match(text, /🟡 \+2348222222222 \(connecting…\)/);
+});
+
+test('/sessions marks stored-but-offline numbers', async () => {
+    const fixture = createFixture();
+    // authDirRoot is '/auth' in the fixture (nonexistent) — offline scan is
+    // skipped silently; the live-socket listing still works.
+    fixture.waSessions.set('2348333333333', { sock: { user: { id: '2348333333333:2@s.whatsapp.net' } } });
+    await fixture.service.handleSessions({ chat: { id: 1 } });
+    assert.match(fixture.sent.at(-1).text, /\+2348333333333/);
+});
+
 test('constructor requires every dependency', () => {
     assert.throws(() => createTelegramCommandService({}), /require/);
 });
@@ -98,7 +121,7 @@ test('register attaches all seven handlers to a bot instance', () => {
         on: (event, cb) => registered.on.push({ event, cb })
     };
     fixture.service.register(fakeBot);
-    assert.equal(registered.onText.length, 6);
+    assert.equal(registered.onText.length, 7);
     assert.equal(registered.on.length, 1);
     assert.equal(registered.on[0].event, 'message');
 });

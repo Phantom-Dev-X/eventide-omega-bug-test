@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs';
 
 /**
  * Telegram bot command surface: /start, /pair, the plain-text pairing-number
@@ -76,7 +77,7 @@ export function createTelegramCommandService(deps) {
 
         await safeTgSend(
             chatId,
-            `🤖 *WhatsApp Multi-Bot*\n\nSend your number to pair using country code without + sign.\nExample: 2348012345678\n\n/pair — Start pairing\n/status — Show status\n/unbug — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Commands`
+            `🤖 *WhatsApp Multi-Bot*\n\nSend your number to pair using country code without + sign.\nExample: 2348012345678\n\n/pair — Start pairing\n/status — Show status\n/sessions — List all connected numbers\n/unbug — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Commands`
         );
     }
 
@@ -157,6 +158,48 @@ export function createTelegramCommandService(deps) {
         await safeTgSend(
             chatId,
             `📊 *Status*\n\nYour state: ${statusMap[user?.status || 'disconnected'] || '❓ Unknown'}\nYour number: ${user?.phoneNumber || 'None'}\n\n👥 Active sockets: ${waSessions.size}\n📁 Stored sessions: ${sessionDirs}/${maxUsers}\n🧠 Loaded Telegram users: ${telegramUsers.size}\n⏱️ Uptime: ${formatUptime(process.uptime())}\n☁️ Supabase Sync: ${isSupabaseEnabled() ? '✅ Enabled' : '❌ Disabled'}`
+        );
+    }
+
+    // /sessions — list every number connected to this bot: live sockets
+    // (green = connected, yellow = still connecting) plus numbers with a
+    // saved session on disk that are currently offline. Admin-only.
+    async function handleSessions(msg) {
+        const chatId = msg.chat.id;
+        log('TELEGRAM', `/sessions from ${chatId}`);
+        if (!(await requireAdminOrExplain(chatId))) return;
+
+        const lines = [];
+        const activeKeys = new Set();
+        for (const [phoneNumber, session] of waSessions) {
+            const key = String(phoneNumber);
+            activeKeys.add(key);
+            activeKeys.add(key.replace(/\D/g, ''));
+            const alive = !!(session?.sock?.user?.id);
+            const name = session?.sock?.user?.name || '';
+            const tg = session?.telegramChatId ? ' · TG linked' : '';
+            lines.push(
+                `${alive ? '🟢' : '🟡'} +${key.replace(/\D/g, '')}` +
+                `${name ? ` — ${name}` : ''}${alive ? '' : ' (connecting…)'}${tg}`
+            );
+        }
+        try {
+            const stored = fs.readdirSync(authDirRoot, { withFileTypes: true })
+                .filter(e => e.isDirectory())
+                .map(e => e.name)
+                .filter(name => {
+                    const digits = name.replace(/\D/g, '');
+                    return digits.length >= 7 && !activeKeys.has(name) && !activeKeys.has(digits);
+                });
+            for (const name of stored) {
+                lines.push(`💤 +${name.replace(/\D/g, '')} (offline — session saved)`);
+            }
+        } catch (_) {}
+
+        await safeTgSend(
+            chatId,
+            `📱 *Sessions* — ${waSessions.size} active · ${countStoredSessions()}/${maxUsers} stored\n\n` +
+            (lines.length ? lines.join('\n') : '_none_')
         );
     }
 
@@ -319,7 +362,7 @@ export function createTelegramCommandService(deps) {
 
         await safeTgSend(
             chatId,
-            `📖 *Commands*\n\n/start — Welcome message\n/pair — Connect your WhatsApp\n/status — Show status\n/unbug — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Show commands\n\n*WhatsApp commands:*\n.ping`
+            `📖 *Commands*\n\n/start — Welcome message\n/pair — Connect your WhatsApp\n/status — Show status\n/sessions — List all connected numbers\n/unbug — Remove sent bug messages (72h window)\n/disconnect — Disconnect your session\n/help — Show commands\n\n*WhatsApp commands:*\n.ping`
         );
     }
 
@@ -329,6 +372,7 @@ export function createTelegramCommandService(deps) {
         tgBot.onText(/\/pair/, handlePair);
         tgBot.on('message', handleMessage);
         tgBot.onText(/\/status/, handleStatus);
+        tgBot.onText(/\/sessions/, handleSessions);
         tgBot.onText(/\/unbug/, handleUnbug);
         tgBot.onText(/\/disconnect/, handleDisconnect);
         tgBot.onText(/\/help/, handleHelp);
@@ -340,6 +384,7 @@ export function createTelegramCommandService(deps) {
         handlePair,
         handleMessage,
         handleStatus,
+        handleSessions,
         handleUnbug,
         handleDisconnect,
         handleHelp
