@@ -96,6 +96,7 @@ import { createPollMenuService } from './src/whatsapp/poll-menu-service.js';
 import { createMenuVoteService } from './src/whatsapp/menu-vote-service.js';
 import { createGroupMembershipCommands } from './src/commands/group/membership.js';
 import { createGroupInformationCommands } from './src/commands/group/information.js';
+import { createGroupStatusCommands } from './src/commands/group/status.js';
 import { createGroupModerationCommands } from './src/commands/group/moderation.js';
 import { createGroupProtectionCommands } from './src/commands/group/protections.js';
 import { createGroupWarningCommands } from './src/commands/group/warnings.js';
@@ -1152,6 +1153,10 @@ const commandRegistry = createCommandRegistry([
         groupChannelLink: GROUP_CHANNEL_LINK,
         isDevNumber,
         isUserGroupAdmin
+    }),
+    ...createGroupStatusCommands({
+        safeWaReply,
+        isDevNumber
     }),
     ...createGroupModerationCommands({
         safeWaReply,
